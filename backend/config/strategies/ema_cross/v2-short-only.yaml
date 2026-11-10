@@ -1,0 +1,14 @@
+# Variant for comparison: short side only, wider stop. Still educational.
+strategy_id: ema_cross
+version: v2-short-only
+status: DRAFT
+description: "Short-only EMA 20/50 crossover, 3x ATR stop, 2R target"
+params:
+  fast_period: 20
+  slow_period: 50
+  atr_period: 14
+  atr_stop_mult: 3.0
+  reward_risk: 2.0
+  allow_long: false
+  allow_short: true
+  exit_on_opposite_cross: true

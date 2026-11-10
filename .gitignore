@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Runtime data (market data, databases, logs) — never committed
+data/
+*.sqlite
+*.db
+logs/
+
+# Secrets — never committed
+.env
+.env.*
+!.env.example

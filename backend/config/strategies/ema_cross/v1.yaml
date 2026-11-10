@@ -1,0 +1,15 @@
+# EDUCATIONAL example strategy. Validates the data -> strategy -> backtest pipeline.
+# Not a research hypothesis; no profitability is implied.
+strategy_id: ema_cross
+version: v1
+status: DRAFT
+description: "EMA 20/50 crossover, 2x ATR stop, 2R target, exit on opposite cross"
+params:
+  fast_period: 20
+  slow_period: 50
+  atr_period: 14
+  atr_stop_mult: 2.0
+  reward_risk: 2.0
+  allow_long: true
+  allow_short: true
+  exit_on_opposite_cross: true

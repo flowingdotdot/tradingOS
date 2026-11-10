@@ -24,9 +24,11 @@ from pydantic import BaseModel
 
 from tradingos.strategy.base import Strategy
 from tradingos.strategy.builtin.ema_cross import EmaCrossStrategy
+from tradingos.strategy.builtin.ict_ote import IctOteStrategy
 
 STRATEGY_CLASSES: dict[str, type[Strategy]] = {
     EmaCrossStrategy.strategy_id: EmaCrossStrategy,
+    IctOteStrategy.strategy_id: IctOteStrategy,
 }
 
 

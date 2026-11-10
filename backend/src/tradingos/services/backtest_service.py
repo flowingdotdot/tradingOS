@@ -16,6 +16,7 @@ from tradingos.domain.timeframes import Timeframe
 from tradingos.marketdata.store import CandleStore, data_fingerprint
 from tradingos.marketdata.validation import validate_candles
 from tradingos.storage.runs import RunRepository
+from tradingos.strategy.base import has_limit_entries
 from tradingos.strategy.registry import build_strategy, get_version
 
 DISCLAIMER = (
@@ -53,6 +54,11 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
 
     store = CandleStore(settings.market_data_dir)
     strategy = build_strategy(version.strategy_id, version.params)
+    if strategy.required_timeframe and strategy.required_timeframe != tf.value:
+        raise BacktestInputError(
+            f"{version.strategy_id} runs on {strategy.required_timeframe} bars (higher timeframes are built "
+            f"from them); got {tf.value}"
+        )
     # Load extra history before start_ts so indicators are warmed up; trading is only
     # allowed from start_ts onwards (signals before it are discarded).
     warm_start = config.start_ts - strategy.warmup_bars() * tf.ms
@@ -82,6 +88,11 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
     if quality.gaps:
         notes.append(f"Data has {len(quality.gaps)} gap(s), {quality.missing_bars} missing bar(s). Not filled.")
 
+    if has_limit_entries(signals_t):
+        raise BacktestInputError(
+            "this strategy version emits LIMIT entries (e.g. fvg_retest); the backtest engine supports "
+            "market entries only until Phase 3. Use it in Strategy Lab for research."
+        )
     result = run_backtest(bars_t, signals_t, config, instrument)
     metrics = compute_metrics(result)
     notes += result.notes

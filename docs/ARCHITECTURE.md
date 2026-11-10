@@ -46,12 +46,15 @@ tradingOS/
 │   │   │   ├── collector.py   # 페이지네이션 수집 + 증분 동기화
 │   │   │   ├── validation.py  # 결측/중복/정렬/미완성 캔들 검사
 │   │   │   └── store.py       # Parquet 저장소
+│   │   ├── features/          # ICT 개념별 독립 모듈 (모든 이벤트에 ts + known_ts)
+│   │   │   ├── swings.py, structure.py (BOS/MSS/sweep), displacement.py, fvg.py, ote.py
+│   │   │   └── mtf.py         # 5m → 15m/4H 생성, 인식 시각 기준 정렬
 │   │   ├── strategy/          # Strategy Engine
 │   │   │   ├── base.py        # Strategy 인터페이스, Signal 스키마
 │   │   │   ├── registry.py    # 전략 클래스 + YAML 버전 로딩
 │   │   │   ├── causality.py   # look-ahead 검사기 (모든 전략 필수 통과)
 │   │   │   ├── indicators.py  # 인과적 지표 (EMA, ATR)
-│   │   │   └── builtin/ema_cross.py
+│   │   │   └── builtin/       # ema_cross.py (교육용), ict_ote.py (연구 가설)
 │   │   ├── risk/              # Risk Engine (백테스트·실거래 공용)
 │   │   │   └── engine.py
 │   │   ├── backtest/          # Backtesting Engine
@@ -60,7 +63,7 @@ tradingOS/
 │   │   │   └── metrics.py     # 성과 지표
 │   │   ├── storage/
 │   │   │   └── runs.py        # 백테스트 실행 Repository (SQLite)
-│   │   ├── services/          # 유스케이스 조립 (API/CLI가 공유)
+│   │   ├── services/          # 유스케이스 조립 (API/CLI가 공유): backtest_service, research_service
 │   │   ├── api/app.py         # FastAPI
 │   │   └── cli.py             # `tradingos` 명령줄
 │   └── tests/

@@ -1,137 +1,191 @@
 # Trading OS — 전략 명세 (Strategy Spec)
 
-> 상태: v0.1. **§2의 ICT 정의는 "제안(proposal)"이며 아직 구현되지 않았다.** §4의 "결정 필요" 항목에 대한 합의 후 Phase 2에서 구현한다.
-> 어떤 정의도 수익성을 함의하지 않는다. 이 문서는 "측정 가능하게 만드는 것"이 목적이다.
+> 상태: **v0.2 (Phase 2 구현됨)**. ICT 개념을 하나의 정답으로 고정하지 않고, 정의를 **설정으로 바꿔 가며 실험**할 수 있게 구현했다.
+> 아래의 모든 기본값은 **첫 번째 연구 가설**이며 최적값이 아니다. 유효성은 Phase 3 백테스트(IS/OOS, 워크포워드)로 검증한다.
+> 어떤 정의도 수익성을 함의하지 않는다.
 
-## 0. 공통 표기와 규칙
+코드 위치: `backend/src/tradingos/features/` (개념별 독립 모듈), `backend/src/tradingos/strategy/builtin/ict_ote.py` (조합).
+설정: `backend/config/strategies/ict_bearish_ote/*.yaml`.
 
-- 봉 i의 시가/고가/저가/종가: `O_i, H_i, L_i, C_i`. 봉 시작 시각 `ts_i`, 종료 시각 `ts_i + Δ` (Δ = 봉 길이).
-- **가용 시각(availability time)**: 어떤 특징(feature)이 처음 계산 가능해지는 봉 종료 시각. 모든 정의에 명시한다. 전략은 가용 시각 이후에만 그 특징을 쓸 수 있다.
-- `ATR_n(i)`: Wilder 방식 n기간 Average True Range, 봉 i 종료 시 가용.
-- 모든 임계값은 YAML 파라미터다. 아래 괄호 안 값은 **잠정 기본값**이지 최적값이 아니다.
-- 다중 타임프레임 정렬: 상위 TF 봉은 **종료 시각 ≤ 하위 TF 의사결정 시각** 인 것만 사용한다 (`merge_asof` on close time, `allow_exact_matches=True`). 진행 중인 4H 봉은 절대 쓰지 않는다.
+## 0. 공통 규칙
 
-## 1. 전략 인터페이스 (구현됨)
+- 봉 i의 시가/고가/저가/종가 `O_i, H_i, L_i, C_i`. 봉 시작 시각 `ts_i`, 종료 시각 `ts_i + Δ`.
+- **두 개의 시각**: 모든 구조(스윙, BOS/MSS, FVG, 임펄스, 셋업)는
+  - `ts` (발생 시각, 차트에 그려지는 위치)와
+  - `known_ts` (알고리즘이 처음 알 수 있는 시각 = 확정 봉의 **종료** 시각)를 따로 저장한다.
+  - 의사결정 시각 T에는 `known_ts ≤ T` 인 정보만 사용한다. 차트에 그려진 위치를 인식 시점으로 착각하지 않도록 UI에 ✓ 마커와 "Knowledge replay"를 제공한다.
+- **다중 타임프레임**: 기준 데이터는 5m. 15m·4H 봉은 5m에서 직접 만든다 (`features/mtf.py`).
+  - UTC 버킷 `floor(ts / Δ_htf)`; 구성 5m 봉이 **모두** 있을 때만 상위 봉이 존재 (결측·형성 중 버킷은 사용하지 않음).
+  - 상위 봉의 `known_ts` = 마지막 5m 봉의 종료 시각. 5m 봉 j의 결정(시각 `ts_j + 5m`)은 `known_ts ≤ ts_j + 5m` 인 상위 정보만 쓴다.
+  - 실데이터 검증: 5m로 만든 15m/4H 봉이 OKX 원본 15m/4H와 OHLC 완전 일치(오차 0).
+- **데이터 결측**: 가짜 캔들로 채우지 않는다. 결측을 가로지르는 스윙 창·FVG 3봉은 성립하지 않는다.
+- **인과성 검증**: `strategy/causality.py` — 무작위·지정 절단 지점에서 "앞부분만 준 결과의 마지막 행 = 전체 결과의 같은 행"을 확인. 모든 등록 전략에 적용.
 
-```python
-class Strategy(ABC):
-    strategy_id: str
-    def __init__(self, params: dict): ...
-    def warmup_bars(self) -> int: ...                 # 지표 안정화에 필요한 최소 봉 수
-    def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame: ...
-```
+## 1. 전략 인터페이스
 
-`generate_signals` 출력 (입력과 같은 인덱스):
+`Strategy.generate_signals(bars) -> DataFrame` (행 i는 행 0..i에만 의존). 열: `entry(+1/−1/0), stop, target, exit_long, exit_short, reason`, 선택 열 `limit_price, limit_expiry_bars` (NaN = 다음 봉 시가 시장가).
+`required_timeframe`(ICT 전략 = 5m)이 있으면 백테스트는 해당 타임프레임만 허용한다. 수량·승인은 Risk Engine 담당.
 
-| 열 | 타입 | 의미 |
-|---|---|---|
-| `entry` | int | +1 롱 진입 의도, −1 숏 진입 의도, 0 없음 |
-| `stop` | float | 진입 시 손절 **가격** (entry≠0이면 필수) |
-| `target` | float | 익절 가격 (NaN 허용 = 익절 없음) |
-| `exit_long` / `exit_short` | bool | 보유 포지션 청산 의도 |
-| `reason` | str | 사람이 읽을 수 있는 신호 근거 (저널/차트용) |
+## 2. 개념 정의 (구현됨)
 
-**인과성 계약**: 행 i는 입력 행 0..i 에만 의존. `tests/test_strategy_causality.py`가 모든 등록 전략에 대해 검증한다.
-신호는 봉 i 종료 시점의 의도이며, 체결은 엔진이 봉 i+1 시가에 수행한다. 수량은 전략이 아니라 Risk Engine이 정한다.
+### 2.1 Swing — `features/swings.py`
+파라미터 `k_left=3, k_right=3`, `require_contiguous=true`.
+- 스윙 고점: `H_i > max(H_{i−kL..i−1})` **그리고** `H_i ≥ max(H_{i+1..i+kR})`. 저점은 대칭.
+- **동일 고점/저점**: 왼쪽 엄격(>), 오른쪽 비엄격(≥) → 같은 값이 연속되면 **가장 먼저 나온 봉**만 스윙.
+- 한 봉이 스윙 고점이면서 저점일 수 있다 (outside bar) — 둘 다 기록.
+- `known_idx = i + kR`, `known_ts = ts_{i+kR} + Δ`. 오른쪽 kR개 봉이 모두 닫히기 전에는 존재하지 않는다(미확정 스윙은 출력되지 않음).
+- 창 `i−kL..i+kR` 안에 결측 봉이 있으면 스윙이 아니다.
 
-## 2. ICT 개념의 수학적 정의 (제안)
+### 2.2 기준 스윙 선택 규칙 ("여러 swing이 존재할 때")
+- 시점 t의 **기준 고점/저점** = `known_idx < t` 인 스윙 중 **가장 최근에 확정된(known) 것**, 아직 종가로 돌파되지 않은 것.
+- 새 스윙이 확정되면 같은 종류의 이전 기준을 **대체**한다 (이전 것이 미돌파여도). → "가장 최근 구조가 우선".
+- 같은 시각에 확정되는 스윙은 고점·저점 각각 최대 1개(고정 k이므로)이며, outside bar는 둘 다 기준이 된다.
 
-### 2.1 스윙 고점/저점 (Swing High / Low) — 프랙탈 정의
-파라미터: `k_left (2)`, `k_right (2)`.
-- 봉 i는 **스윙 고점**: `H_i > max(H_{i-k_left..i-1})` 그리고 `H_i ≥ max(H_{i+1..i+k_right})`.
-- 봉 i는 **스윙 저점**: `L_i < min(L_{i-k_left..i-1})` 그리고 `L_i ≤ min(L_{i+1..i+k_right})`.
-- 동률 규칙: 왼쪽은 엄격(>), 오른쪽은 비엄격(≥) → 같은 고점이 연속되면 **먼저 나온 봉**이 스윙.
-- **가용 시각: 봉 `i + k_right` 종료 시.** ← 가장 흔한 look-ahead 실수 지점. 차트에는 봉 i에 표시하지만, 전략은 i+k_right 이후에만 안다.
+### 2.3 BOS / MSS — `features/structure.py`
+- 약세 돌파: `C_t < 기준저점가` (**종가** 기준; 꼬리만 넘으면 돌파 아님). 강세 대칭.
+- 각 스윙은 한 번만 돌파된다. 돌파 후 새 스윙이 확정될 때까지 그 종류의 기준은 없다.
+- **추세 상태** = 직전 돌파의 방향 (첫 돌파 전 0).
+- **구분**: 돌파 방향 d에 대해 직전 추세가 `−d` 이면 **MSS**(직전 방향과 반대되는 돌파), 아니면 **BOS**(연속 또는 첫 돌파).
+- **연속된 BOS**: 같은 방향으로 새 스윙이 확정되고 다시 종가 돌파될 때마다 BOS가 하나씩 기록된다.
+- **MSS의 "유효한 내부 구조"**: 5m에서 `internal_k = 3` 스윙으로 같은 상태 기계를 돌린 결과. 내부 k는 별도 파라미터 (Phase 3에서 1, 2와 비교).
+- 돌파 레그: 약세 돌파의 `leg_extreme` = (돌파된 스윙, t] 구간 최고가; `has_displacement` = [leg_extreme 봉, t] 안에 약세 Displacement 존재 여부.
 
-### 2.2 시장 구조 (Market Structure)
-확정된 스윙 시퀀스 `SH_1, SH_2, …` 와 `SL_1, SL_2, …` (가용 시각 순).
-- **약세 구조(bearish)**: 가장 최근 두 확정 스윙 고점이 `SH_last < SH_prev` (LH) **그리고** 두 확정 스윙 저점이 `SL_last < SL_prev` (LL).
-- 강세 구조는 대칭. 둘 다 아니면 `neutral`.
+### 2.4 Liquidity sweep — `features/structure.py`
+- 매수측 스윕: `H_t > 기준고점가` **그리고** `C_t ≤ 기준고점가` (꼬리로 넘고 종가 복귀). 매도측 대칭. 스윙당 1회.
+- 스윕은 추세를 바꾸지 않고 스윙을 소모하지 않는다 (이후 종가 돌파는 정상적으로 BOS/MSS).
+- 현재 전략 조건에는 쓰지 않으며 탐지·시각화만 한다 (향후 필터 후보).
 
-### 2.3 BOS (Break of Structure, 약세)
-- 시점 t에서 가장 최근 **확정** 스윙 저점 가격 `P_sl`에 대해 `C_t < P_sl` (기본 `break_mode=close`) 또는 `L_t < P_sl` (`break_mode=wick`).
-- 같은 스윙 저점에 대한 BOS는 1회만 카운트.
-- 가용 시각: 봉 t 종료 시.
+### 2.5 Displacement — `features/displacement.py`
+- **기본 (v1, `method: median_body`)**: `|C_t − O_t| ≥ 1.5 × median(|C−O|, 직전 20개 확정 봉)`, 기준값 > 0. 20개 미만이면 거짓.
+- **대안 (`method: atr`, 기존 제안 보존)**: `|C_t − O_t| ≥ 1.2 × ATR14(t−1)`.
+- 선택: `min_body_ratio` (몸통/전체범위 하한, 기본 비활성).
+- 방향: `C<O` 약세, `C>O` 강세. `known_ts` = 봉 t 종료.
+- "직전 20개"는 **행 기준** (시간 기준 아님) — 결측이 있어도 직전 20개 확정 봉.
 
-### 2.4 MSS (Market Structure Shift, 약세)
-ICT 문헌에서 가장 모호한 개념이다. 제안 정의:
-- 하위 TF(5m)에서 되돌림(상승) 중 형성된 **가장 최근 확정 내부 스윙 저점** `P_isl` (k=`k_internal (1~2)`)을, 되돌림 최고점 이후에 `C_t < P_isl` 로 깨는 첫 봉.
-- 추가 조건: 깨는 구간(최고점 이후 ~ t) 안에 **Displacement 봉이 1개 이상**.
-- BOS와의 차이: BOS는 추세 방향 지속의 확인, MSS는 **단기 역추세(되돌림)의 종료** 확인. 수학적으로는 같은 "스윙 저점 종가 이탈"이며, **어떤 스윙을 기준으로 하느냐(맥락)** 가 다르다.
+### 2.6 FVG — `features/fvg.py`
+- 3봉 (i−2, i−1, i, 연속이어야 함). 약세: `L_{i−2} > H_i` → `[H_i, L_{i−2}]`. 강세: `H_{i−2} < L_i` → `[H_{i−2}, L_i]`.
+- 발생 위치 = 가운데 봉(i−1), `known_ts` = 봉 i 종료.
+- **최소 크기**: `top − bottom ≥ 0.1 × ATR14(i)` (`min_size_mode: atr`); `none`이면 > 0.
+- 선택: 가운데 봉이 Displacement일 것 (`require_displacement_middle`, 기본 false — 순수 3캔들 정의).
+- **수명주기** (각각 별도 인식 시각): touched(가격이 구간 진입), filled(반대편 끝 도달), **invalidated**(기본: 종가가 반대편 끝을 넘음 `close`; 대안 `wick`).
+- **중첩 FVG**: 합치지 않고 각각 별도 구간으로 유지. 소비 측(진입 구역)이 규칙을 정한다 (§3.3).
 
-### 2.5 Displacement (약세)
-파라미터: `atr_period (14)`, `body_atr_mult (1.2)`, `min_body_ratio (0.6)`.
-- 봉 t가 약세 displacement: `C_t < O_t` 그리고 `(O_t − C_t) ≥ body_atr_mult × ATR(t−1)` 그리고 `(O_t − C_t) / (H_t − L_t) ≥ min_body_ratio`.
-- ATR은 **t−1까지**로 계산 (자기 자신이 ATR을 키우는 효과 배제).
-- 가용 시각: 봉 t 종료 시.
+### 2.7 Dealing range / Premium·Discount / OTE — `features/ote.py`
+- 약세 임펄스 A(고점)→B(저점), `R = A − B`, `r(P) = (P − B)/R`. EQ = 0.5, Premium = r > 0.5.
+- OTE = `[B + 0.62R, B + 0.79R]`, 기준선 0.705.
 
-### 2.6 FVG (Fair Value Gap, 약세)
-3봉 패턴 (i−2, i−1, i):
-- 약세 FVG 존재: `L_{i-2} > H_i`. 구간 `[bottom, top] = [H_i, L_{i-2}]`.
-- 최소 크기: `top − bottom ≥ min_gap_atr (0.1) × ATR(i)`.
-- 선택: 가운데 봉 i−1이 displacement여야 함 (`require_displacement_middle: true`).
-- 가용 시각: 봉 i 종료 시.
-- 상태 전이 (이후 봉 t > i):
-  - `touched`: `H_t ≥ bottom` (가격이 갭에 진입)
-  - `filled`: `H_t ≥ top` (갭 완전 메움)
-  - `invalidated`: `C_t > top` (기본 무효화 규칙)
+## 3. Bearish OTE Continuation v1 — 질문별 확정 정의
 
-### 2.7 Dealing Range, Premium / Discount
-약세 임펄스의 기준점: 임펄스 고점 `A`(스윙 고점), 임펄스 저점 `B` (A 이후 최저가).
-- 범위 `R = A − B`, 균형가(Equilibrium) `EQ = B + 0.5R`.
-- 가격 P의 되돌림 비율 `r(P) = (P − B) / R`. `r > 0.5` = **Premium**, `r < 0.5` = **Discount**.
-- 숏은 Premium에서만 고려 (가설).
+### 3.1 4H 약세 바이어스 (`bias`)
+- 기본 `mode: swing_sequence`: 4H에서 **확정된** 최근 두 스윙 고점이 LH(낮아짐) **그리고** 최근 두 스윙 저점이 LL → −1. HH+HL → +1. 그 외 0.
+- 대안 `mode: last_break`: 4H 마지막 구조 돌파 방향.
+- 판정 시점: 셋업 활성화 시 (`bias = −1` 아니면 `bias_not_bearish`), 그리고 `recheck_at_trigger: true`이면 트리거 시 재확인 (`bias_lost`).
+- 4H 정보는 해당 4H 봉 종료 이후에만 5m 결정에 반영.
 
-### 2.8 OTE (Optimal Trade Entry, 약세)
-- OTE 구간: `r ∈ [ote_low (0.62), ote_high (0.79)]` ⇔ 가격 `[B + 0.62R, B + 0.79R]`. 참고 수준 0.705.
-- 되돌림이 `r ≥ 1` (A 돌파)에 도달하면 해당 셋업은 **무효**.
+### 3.2 임펄스의 시작점·끝점 (OTE 기준)
+- 15m 약세 돌파 이벤트(BOS 또는 MSS, `break_kinds`) 중 `has_displacement`(필수 시)인 것.
+- **시작점 A** = 돌파 레그 최고가 (돌파된 스윙 저점 이후 ~ 돌파 봉 사이 최고 고가).
+- **끝점 B** = 돌파 봉 **이후(포함)** 처음 나타나는 **확정** 15m 스윙 저점. → **임펄스는 B가 확정된 시각(`B.known_ts`)에 처음 알려진다.**
+- A 이후 B 확정 전까지 고가가 A를 넘으면 임펄스 무효.
+- 연속된 BOS가 같은 B로 귀결되면 하나의 임펄스로 합치고 **가장 높은 A**를 쓴다.
 
-### 2.9 Liquidity Sweep (매수측 유동성 스윕, 약세 맥락)
-- 확정 스윙 고점 가격 `P_sh` 에 대해 봉 t: `H_t > P_sh + tol` 그리고 `C_t < P_sh`. `tol = sweep_tol_atr (0.0) × ATR`.
-- 의미(가설): 직전 고점 위의 손절 주문을 소진한 뒤 되돌아옴.
+### 3.3 진입 구역 (Entry zone)
+- 기본: `OTE ∩ FVG` — 임펄스 레그 안(첫 봉 ≥ A, 셋째 봉 ≤ B)에서 생긴 약세 15m FVG 각각과 OTE의 교집합. 비어 있지 않은 것들이 구역 목록.
+- 임펄스가 알려질 때 이미 무효화된 FVG는 제외. 이후에도 터치 전에 무효화된 FVG 구역은 제거 (모두 제거되면 `zones_invalidated`).
+- 토글: `fvg.enabled: false` → OTE 전체가 구역. `ote.enabled: false` → FVG 원래 구간이 구역. 둘 다 끄기는 허용하지 않음.
+- **터치**: 5m 고가 ≥ 유효 구역들의 최저 하단.
 
-### 2.10 확정된 약세 임펄스 (Confirmed Bearish Impulse)
-- 확정 스윙 고점 `A` 이후,
-- (a) A 이전의 확정 스윙 저점에 대한 **약세 BOS** 발생, 그리고
-- (b) A~BOS 구간에 Displacement 봉 ≥ 1개,
-- 임펄스 저점 `B` = A 이후 가격이 되돌림을 시작하기 전 최저가. **B의 확정**: B가 스윙 저점으로 확정된 시점(가용 시각 = B봉 + k_right).
+### 3.4 15m setup과 5m trigger의 시간 순서
+1. 15m 임펄스가 알려짐 (`known_ts` = B 확정 15m 봉 종료) → 셋업 생성.
+2. **그 다음 5m 봉부터** 감시 (이미 지나간 5m 가격은 사용하지 않음).
+3. 터치 전: 5m 고가 > A → `invalidated`; 5m 저가 < B → `impulse_extended`; `setup_expiry_bars`(15m 96개 = 24h) 경과 → `expired_no_touch`.
+4. 터치 후 `trigger_expiry_bars`(5m 36개 = 3h) 안에 트리거가 없으면 `expired_no_trigger`.
+5. **트리거 (`trigger: mss`)**: 터치 봉 이후(같은 봉 포함) 5m **약세 MSS** — 5m 내부 추세가 강세(되돌림 중 강세 돌파 발생)였다가 약세 종가 돌파. 돌파된 내부 스윙은 **B 저점 이후에 형성된 것**이어야 하고, `require_displacement_in_mss: true`이면 MSS 레그에 Displacement 필요.
+6. 대안 `trigger: touch`: 터치 봉 자체가 트리거 (MSS 확인 없음, 비교용).
 
-## 3. Bearish OTE Continuation v1 (연구 가설, 미구현)
+### 3.5 진입 변형 (서로 다른 전략 버전)
+| 버전 | `entry.mode` | 진입 방식 | 백테스트 |
+|---|---|---|---|
+| `v1-mss-close` | `mss_close` | MSS 봉 종료 → **다음 5m 시가 시장가 숏** | Phase 1 엔진 지원 |
+| `v1-fvg-retest` | `fvg_retest` | MSS 후, MSS 레그(레그 최고점 이후 ~ MSS 봉)에서 생긴 **가장 최근 약세 5m FVG 하단에 지정가 숏** | **Phase 3** (엔진이 지정가 미지원 → 백테스트 API가 명시적으로 거부) |
 
-> **검증되지 않은 가설**이다. 아래 규칙은 테스트 가능하게 만들기 위한 것이며 수익성을 주장하지 않는다.
+### 3.6 손절과 구조적 무효화
+- 손절 = `retracement_high × (1 + 5bps)`. retracement_high = B 저점이 찍힌 5m 봉부터 트리거 봉까지의 최고 고가. 대안 `stop.mode: impulse_high` → A 위.
+- 구조적 무효화 = 가격이 A를 넘음 (셋업 종료). 진입 후 무효화는 손절이 담당.
 
-| 단계 | TF | 규칙 |
-|---|---|---|
-| 1. 바이어스 | 4H | §2.2 약세 구조 (확정 스윙만, 닫힌 4H 봉만) |
-| 2. 임펄스 | 15m | §2.10 확정 약세 임펄스 A→B |
-| 3. FVG | 15m | A~B 구간에서 생성된, 아직 무효화되지 않은 약세 FVG ≥ 1 |
-| 4. OTE | 15m | A, B로 §2.8 OTE 구간 계산 |
-| 5. 되돌림 진입 | 15m | 가격이 "적격 구역"에 진입. 기본: `OTE ∩ FVG` 가 비어있지 않고 `H_t` 가 그 교집합에 닿음 (`zone_rule`) |
-| 6. 확인 | 5m | 터치 이후 §2.4 약세 MSS + §2.5 Displacement |
-| 7. 진입 | 5m | MSS 확인 봉 종료 → 다음 5m 봉 시가 숏 |
-| 8. 손절/목표/수량 | — | SL = 되돌림 최고가 + `sl_buffer_atr (0.1) × ATR_5m`; TP = `target_mode` (`impulse_low`=B, 또는 `r_multiple`=2R); 수량 = Risk Engine |
+### 3.7 목표가와 최소 손익비
+- 목표 = **이전 확정 저점 = 임펄스 끝점 B**.
+- 계획 손익비 `RR = (entry_ref − target) / (stop − entry_ref)`. entry_ref = MSS 봉 종가 (`mss_close`) 또는 지정가 (`fvg_retest`).
+- 목표가가 진입가 이상(반대편) → `rejected_target`. 손절이 진입가 이하 → `rejected_stop`. `RR < 1.5` → `rejected_rr`. **거부 시 목표를 조정해 억지로 맞추지 않는다.**
+- 주의: 시장가 진입은 다음 봉 시가에 체결되므로 실제 RR은 계획과 다를 수 있다 (Phase 3: 체결 기준 RR 재검사 옵션).
 
-무효화/만료: 5단계 이전에 A 돌파 → 무효. 임펄스 확정 후 `setup_expiry_bars (96 × 15m = 24h)` 내 진입 없으면 만료.
-동시에 하나의 셋업만 추적 (가장 최근 확정 임펄스 우선).
+### 3.8 미체결 주문 취소 (`fvg_retest`)
+- `retest_expiry_bars`(5m 12개 = 1h) 안에 체결 안 되면 취소.
+- 체결 전 가격이 목표가에 먼저 도달하면 취소 (기회 소멸).
+- 체결 전 손절가 도달 시 취소 (Phase 3 엔진에서 구현; 연구 화면은 가상 결과만 표시).
 
-## 4. 결정 필요 (Open Questions) — Phase 2 구현 전에 합의
+### 3.9 여러 셋업의 우선순위와 중복 방지
+- 동시에 **활성 셋업은 1개**. 새 임펄스가 알려지면 신호를 내지 않은 기존 셋업은 `superseded`로 종료되고 새 셋업이 활성화 ("가장 최근 구조 우선").
+- 셋업 하나는 최대 1개의 신호만 낸다 (신호 후 `signal` 상태로 소모).
+- 같은 B로 귀결되는 임펄스는 하나로 합쳐 중복 셋업을 막는다. 보유 중 신호는 엔진이 `already_in_position`으로 거부.
+- 모든 셋업은 결과 상태(`signal`, `rejected_rr`, `bias_not_bearish`, `no_zone`, `invalidated`, `impulse_extended`, `expired_*`, `superseded` …)와 함께 기록된다 → "왜 진입하지 않았는가"도 연구 대상.
 
-1. **스윙 k값**: 4H/15m/5m 각각 `k_left/k_right` 를 같은 값(2)으로 할지. k가 클수록 신뢰도↑, 지연↑.
-2. **BOS 판정**: 종가 이탈(close) vs 꼬리 이탈(wick). 제안: close.
-3. **MSS 기준 스윙**: 5m 내부 스윙 k=1 vs k=2. k=1은 노이즈에 민감.
-4. **적격 구역 규칙**: `OTE ∩ FVG` (엄격, 신호 적음) vs `OTE ∪ FVG` (느슨).
-5. **임펄스 저점 B 확정 시점**: 스윙 저점 확정까지 기다릴지(지연↑, 안전), 되돌림 첫 봉에서 잠정 확정할지.
-6. **목표가**: 임펄스 저점(B) vs 고정 R배수 vs 다음 유동성(이전 스윙 저점).
-7. **FVG 무효화**: 종가가 top 위(close) vs 고가가 top 위(wick).
-8. **4H 바이어스**: 구조(LH+LL)만 vs 4H Dealing range의 Premium 조건 추가.
+## 4. 결정 기록 (Decision log)
 
-## 5. 예제 전략: `ema_cross` v1 (구현됨, 교육용)
+| # | 항목 | 결정 | 근거 / 상태 |
+|---|---|---|---|
+| 1 | 스윙 k | 3 (모든 TF, 5m 내부 포함) | 사용자 지정. 기존 제안 2와 충돌 → 사용자 확인 후 3 채택, `internal_k` 별도 파라미터 |
+| 2 | BOS 판정 | 종가 | 사용자 지정 = 기존 제안 |
+| 3 | MSS 내부 스윙 | 5m, k=3 | 사용자 확인 |
+| 4 | 진입 구역 | OTE ∩ FVG | 사용자 지정 = 기존 제안 |
+| 5 | 임펄스 끝 B 확정 | 스윙 확정까지 대기 | §3.2 (안전, 지연 있음) |
+| 6 | 목표가 | 이전 확정 저점(B) + 최소 1.5R | 사용자 지정 |
+| 7 | FVG 무효화 | 종가 (`close`), 대안 `wick` | §2.6 |
+| 8 | 4H 바이어스 | 확정 스윙 LH+LL (기존 §2.2 정의 유지), 대안 `last_break` | §3.1 |
+| 9 | Displacement | 중앙값 1.5배 (기본), ATR 1.2배 (대안 모드로 보존) | 기존 제안과 충돌 → 사용자 확인 후 "새 값 기본 + 기존 대안" |
 
-**목적은 파이프라인 검증이지 수익이 아니다.** 단순 EMA 교차는 수수료 차감 후 손실인 경우가 흔하다.
+## 5. 설정 파라미터 (`ict_bearish_ote`)
 
-- `fast = EMA(close, fast_period=20)`, `slow = EMA(close, slow_period=50)` (pandas `ewm(span, adjust=False)`, 인과적)
-- 상향 교차 (`fast_{i-1} ≤ slow_{i-1}` 그리고 `fast_i > slow_i`) → 롱 의도 (`allow_long`)
-- 하향 교차 → 숏 의도 (`allow_short`)
-- 손절 = `C_i ∓ atr_stop_mult (2.0) × ATR_14(i)`, 목표 = `C_i ± reward_risk (2.0) × 손절폭`
-- `exit_on_opposite_cross: true` 이면 반대 교차 시 청산 의도
-- 처음 `warmup = slow_period × 3` 봉 동안은 신호 없음 (EMA 초기값 영향 제거)
+| 그룹 | 키 | 기본값 | 의미 |
+|---|---|---|---|
+| swing | `k_left`, `k_right` | 3, 3 | 15m·4H 스윙 창 |
+| | `internal_k` | 3 | 5m 내부 구조(MSS) 스윙 창 |
+| | `require_contiguous` | true | 결측 봉이 낀 스윙 무효 |
+| displacement | `enabled` | true | 끄면 모든 Displacement 요구 해제 |
+| | `method` | median_body | `median_body` / `atr` |
+| | `lookback`, `mult` | 20, 1.5 | 중앙값 방식 |
+| | `atr_period`, `atr_mult` | 14, 1.2 | ATR 방식 |
+| | `min_body_ratio` | null | 몸통 비율 하한 |
+| bias | `enabled`, `timeframe`, `mode` | true, 4H, swing_sequence | |
+| | `recheck_at_trigger` | true | |
+| impulse | `timeframe` | 15m | |
+| | `break_kinds` | [BOS, MSS] | 임펄스로 인정할 돌파 종류 |
+| | `require_displacement` | true | |
+| fvg | `enabled` | true | |
+| | `min_size_mode`, `min_size_atr`, `atr_period` | atr, 0.1, 14 | |
+| | `require_displacement_middle` | false | |
+| | `invalidation` | close | `close` / `wick` |
+| ote | `enabled`, `low`, `high`, `ref` | true, 0.62, 0.79, 0.705 | |
+| entry | `trigger` | mss | `mss` / `touch` |
+| | `mode` | mss_close | `mss_close` / `fvg_retest` |
+| | `require_displacement_in_mss` | true | |
+| | `setup_expiry_bars` | 96 (15m) | 임펄스 인지 → 터치 |
+| | `trigger_expiry_bars` | 36 (5m) | 터치 → 트리거 |
+| | `retest_expiry_bars` | 12 (5m) | 지정가 유효시간 |
+| stop | `mode`, `buffer_bps` | retracement_high, 5 | |
+| target | `mode`, `min_rr` | impulse_low, 1.5 | |
+
+모든 실행 기록에는 버전·전체 파라미터·`params_hash`·코드 리비전·데이터 지문이 저장된다.
+
+## 6. 아직 주관적 판단이 남은 부분 (Phase 3에서 데이터로 비교할 대상)
+
+1. **연구 설계상 임의값**: FVG 최소 크기 0.1×ATR, 손절 버퍼 5bps, 만료 시간(24h/3h/1h), 워밍업 길이. 근거 있는 값이 아니라 "합리적 출발점"이다.
+2. **기준 스윙 대체 규칙** ("가장 최근 확정 스윙이 이전 미돌파 스윙을 대체")은 ICT 문헌의 여러 해석 중 하나다. 대안: 미돌파 스윙 전체 유지.
+3. **A의 정의**(돌파 레그 최고가)와 **B의 확정 대기**는 진입 시점을 늦춘다. 대안: B 잠정 확정.
+4. **15m 바이어스 vs 4H 중립 구간**: 실데이터에서 4H 바이어스가 0인 시간이 약 45% — 필터가 대부분의 셋업을 제거한다. 이것이 바람직한지는 데이터로 판단해야 한다.
+5. **mss_close의 구조적 약점**: MSS 확인 시점에는 가격이 이미 내려와 RR이 나빠지는 경향 (합성 시나리오에서 RR 0.42 사례). `fvg_retest`가 이를 개선하는지는 Phase 3 지정가 체결 모델이 필요하다.
+6. **표본 수**: 실데이터 180일에 v1-mss-close 신호가 한 자릿수 → 어떤 성과 지표도 통계적으로 의미가 없다. 기간 확대(수년치 데이터)가 필요하다.
+
+## 7. 예제 전략: `ema_cross` (교육용, Phase 1)
+
+EMA(20)/EMA(50) 교차, 손절 2×ATR14, 목표 2R, 반대 교차 청산. 파이프라인 검증용이며 수익성을 기대하지 않는다 (Phase 1 실측: 150일 −22.4%).

@@ -24,7 +24,7 @@ import pandas as pd
 from tradingos.backtest.models import BacktestConfig, Rejection, Trade
 from tradingos.domain.instruments import InstrumentSpec
 from tradingos.risk.engine import RiskEngine
-from tradingos.strategy.base import validate_signals
+from tradingos.strategy.base import has_limit_entries, validate_signals
 
 FUNDING_INTERVAL_MS = 8 * 3_600_000  # OKX BTC-USDT-SWAP: 00:00, 08:00, 16:00 UTC
 
@@ -69,6 +69,8 @@ def run_backtest(
     bars: pd.DataFrame, signals: pd.DataFrame, config: BacktestConfig, instrument: InstrumentSpec
 ) -> BacktestResult:
     validate_signals(signals, bars)
+    if has_limit_entries(signals):
+        raise NotImplementedError("limit entries are not supported by the Phase-1 engine (planned for Phase 3)")
     n = len(bars)
     ts = bars["ts"].to_numpy(dtype="int64")
     o, h, l, c = (bars[k].to_numpy(dtype="float64") for k in ("open", "high", "low", "close"))

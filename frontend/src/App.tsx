@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { api, type SystemInfo } from "./api";
 import { BacktestLab } from "./pages/BacktestLab";
+import { StrategyLab } from "./pages/StrategyLab";
 
 type PageId = "dashboard" | "strategy" | "backtest" | "desk" | "journal" | "intel" | "settings";
 
 const NAV: { id: PageId; label: string; phase?: string }[] = [
   { id: "dashboard", label: "Dashboard" },
-  { id: "strategy", label: "Strategy Lab", phase: "Phase 2" },
+  { id: "strategy", label: "Strategy Lab" },
   { id: "backtest", label: "Backtest Lab" },
   { id: "desk", label: "Trading Desk", phase: "Phase 4" },
   { id: "journal", label: "Trade Journal", phase: "Phase 4–5" },
@@ -15,9 +16,6 @@ const NAV: { id: PageId; label: string; phase?: string }[] = [
 ];
 
 const PLACEHOLDER: Partial<Record<PageId, string>> = {
-  strategy:
-    "Strategy list, parameter editing, version history and signal overlays (swings, FVG zones, OTE bands). " +
-    "ICT concept definitions in docs/STRATEGY_SPEC.md must be agreed before implementation.",
   desk:
     "OKX DEMO automated trading: live chart, strategy state, positions, orders, risk controls, kill switch. " +
     "LIVE remains hard-disabled.",
@@ -111,6 +109,7 @@ export default function App() {
           </div>
         )}
         {page === "dashboard" && <Dashboard system={system} />}
+        {page === "strategy" && <StrategyLab />}
         {page === "backtest" && <BacktestLab system={system} />}
         {PLACEHOLDER[page] && (
           <div className="page">

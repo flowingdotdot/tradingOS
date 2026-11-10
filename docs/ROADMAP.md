@@ -14,15 +14,18 @@
 - [x] FastAPI + React 최소 UI (Backtest Lab)
 - [x] pytest 자동화 테스트
 
-## Phase 2 — Strategy Research (다음)
-- [ ] STRATEGY_SPEC §4 결정 사항 합의
-- [ ] `features/` 모듈: ATR, 스윙(가용 시각 포함), 구조, BOS/MSS, Displacement, FVG(상태 전이), Dealing range/OTE, Sweep — 각 단위 테스트 + 인과성 테스트
-- [ ] 다중 타임프레임 정렬 유틸 (4H/15m/5m, 닫힌 봉만)
-- [ ] Strategy Lab UI: 특징 오버레이 (스윙, FVG 박스, OTE 구간) 시각화
-- [ ] Bearish OTE Continuation v1 구현 (DRAFT)
-- [ ] 전략 버전 게시(publish) 시 불변 저장 (YAML 해시 고정)
+## Phase 2 — Strategy Research ✅
+- [x] STRATEGY_SPEC 결정 사항 기록 (충돌 2건 사용자 확인: Displacement 정의, 스윙 k)
+- [x] `features/`: 스윙(발생/인식 시각 분리), BOS/MSS/스윕 상태 기계, Displacement(중앙값/ATR), FVG(수명주기), Dealing range/OTE
+- [x] 다중 타임프레임: 5m에서 15m/4H 생성(완전한 버킷만), 인식 시각 기준 정렬 — OKX 원본과 일치 검증
+- [x] Bearish OTE Continuation v1: 변형 2개(`v1-mss-close`, `v1-fvg-retest`), 개념별 토글, 셋업 결과 상태 기록
+- [x] Strategy Lab UI: 구조 오버레이, 인식 시점 마커, Knowledge replay, 이벤트 테이블
+- [x] 합성 OHLC 시나리오 테스트 + 실데이터 인과성 테스트
+- [ ] 전략 버전 게시(publish) 시 불변 저장 → Phase 3로 이동
 
 ## Phase 3 — Backtesting 완성
+- [ ] 지정가 진입 체결 모델 (`fvg_retest` 변형 백테스트), 체결가 기준 최소 RR 재검사
+- [ ] 수년치 5m 데이터 수집 (현재 180일 → 신호 표본 부족)
 - [ ] 실제 과거 펀딩비 반영 (OKX funding-rate-history 수집)
 - [ ] IS/OOS 분할, 워크포워드 테스트
 - [ ] 캔들 리플레이 (봉 단위 재생, 그 시점까지만 보이는 특징)

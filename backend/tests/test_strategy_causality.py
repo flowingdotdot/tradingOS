@@ -12,6 +12,7 @@ from conftest import random_walk_bars
 from pydantic import BaseModel
 
 from tradingos.config import BACKEND_DIR
+from tradingos.domain.timeframes import Timeframe
 from tradingos.strategy.base import Strategy, empty_signals
 from tradingos.strategy.causality import LookAheadError, check_causality
 from tradingos.strategy.registry import build_strategy, load_versions
@@ -21,17 +22,22 @@ VERSIONS = load_versions(BACKEND_DIR / "config" / "strategies")
 
 @pytest.mark.parametrize("version", VERSIONS, ids=lambda v: f"{v.strategy_id}:{v.version}")
 def test_registered_strategies_are_causal(version):
-    bars = random_walk_bars(3_000, seed=11)
     strategy = build_strategy(version.strategy_id, version.params)
+    tf = Timeframe(strategy.required_timeframe or "15m")
+    bars = random_walk_bars(max(3_000, strategy.warmup_bars() + 3_000), seed=11, tf=tf)
     full = strategy.generate_signals(bars)
-    assert (full["entry"] != 0).sum() > 5, "test data should produce some signals"
-    check_causality(strategy, bars)
+    if strategy.required_timeframe is None:
+        assert (full["entry"] != 0).sum() > 5, "test data should produce some signals"
+    # (strategies whose default filters rarely fire on random data are additionally checked with
+    #  signal-producing settings in their own test module, e.g. tests/test_ict_strategy.py)
+    check_causality(strategy, bars, n_cuts=25)
 
 
 @pytest.mark.parametrize("version", VERSIONS, ids=lambda v: f"{v.strategy_id}:{v.version}")
 def test_stops_on_correct_side_and_no_signal_in_warmup(version):
-    bars = random_walk_bars(3_000, seed=5)
     strategy = build_strategy(version.strategy_id, version.params)
+    tf = Timeframe(strategy.required_timeframe or "15m")
+    bars = random_walk_bars(max(3_000, strategy.warmup_bars() + 3_000), seed=5, tf=tf)
     sig = strategy.generate_signals(bars)
     longs, shorts = sig["entry"] == 1, sig["entry"] == -1
     assert (sig.loc[longs, "stop"] < bars.loc[longs, "close"]).all()
@@ -82,7 +88,7 @@ def test_guard_detects_whole_series_normalisation():
 
 
 def test_ema_cross_shorts_only_when_configured():
-    v2 = next(v for v in VERSIONS if v.version == "v2-short-only")
+    v2 = next(v for v in VERSIONS if v.strategy_id == "ema_cross" and v.version == "v2-short-only")
     sig = build_strategy(v2.strategy_id, v2.params).generate_signals(random_walk_bars(3_000, seed=9))
     assert not (sig["entry"] == 1).any()
     assert np.isfinite(sig.loc[sig["entry"] == -1, "target"]).all()

@@ -57,6 +57,114 @@ export interface StrategyInfo {
   strategy_id: string;
   description: string;
   versions: StrategyVersion[];
+  required_timeframe: string | null;
+  has_research_view: boolean;
+}
+
+// ---------------------------------------------------------------- research (Strategy Lab)
+// Every item has `ts` (where it occurred / is drawn) and `known_ts` (first moment an algorithm
+// could know it — the close time of the confirming bar).
+export interface RSwing { kind: "high" | "low"; ts: number; price: number; known_ts: number; lag_bars: number }
+export interface RStructure {
+  kind: "BOS" | "MSS" | "SWEEP";
+  direction: number;
+  ts: number;
+  known_ts: number;
+  prior_trend: number;
+  ref_ts: number;
+  ref_price: number;
+  ref_known_ts: number;
+  has_displacement: boolean;
+  leg_extreme_ts: number | null;
+  leg_extreme_price: number | null;
+}
+export interface RFvg {
+  direction: number;
+  ts: number;
+  first_ts: number;
+  known_ts: number;
+  bottom: number;
+  top: number;
+  touched_ts: number | null;
+  touched_known_ts: number | null;
+  filled_ts: number | null;
+  filled_known_ts: number | null;
+  invalidated_ts: number | null;
+  invalidated_known_ts: number | null;
+}
+export interface RTf {
+  timeframe: string;
+  candles: { ts: number[]; open: number[]; high: number[]; low: number[]; close: number[] };
+  swings: RSwing[];
+  structure: RStructure[];
+  fvgs: RFvg[];
+  displacement: { ts: number; direction: number; known_ts: number }[];
+}
+export interface RZone {
+  bottom: number;
+  top: number;
+  fvg_ts: number | null;
+  fvg_bottom: number | null;
+  fvg_top: number | null;
+  fvg_known_ts: number | null;
+  inval_known_ts: number | null;
+}
+export interface RSetup {
+  id: number;
+  status: string;
+  reason: string;
+  break_kind: string;
+  break_ts: number;
+  a_ts: number;
+  a: number;
+  b_ts: number;
+  b: number;
+  known_ts: number;
+  impulse_tf: string;
+  equilibrium: number;
+  ote_low: number;
+  ote_high: number;
+  ote_ref: number;
+  zones: RZone[];
+  touched_ts: number | null;
+  trigger_ts: number | null;
+  trigger_known_ts: number | null;
+  mss_ref_ts: number | null;
+  mss_ref_price: number | null;
+  mode: string;
+  entry_ref: number | null;
+  stop: number | null;
+  target: number | null;
+  rr: number | null;
+  limit_price: number | null;
+  retest_outcome: { outcome: string; ts: number | null; same_bar_stop?: boolean } | null;
+  end_ts: number | null;
+}
+export interface RSignal {
+  ts: number;
+  known_ts: number;
+  side: number;
+  stop: number;
+  target: number;
+  limit_price: number | null;
+  reason: string;
+}
+export interface ResearchResult {
+  strategy_id: string;
+  strategy_version: string;
+  params: Record<string, unknown>;
+  params_hash: string;
+  code_revision: string;
+  data_fingerprint: string;
+  start_ts: number;
+  end_ts: number;
+  base_timeframe: string;
+  roles: { base: string; impulse: string; bias: string };
+  timeframes: Record<string, RTf>;
+  bias: { known_ts: number; bias: number }[];
+  setups: RSetup[];
+  signals: RSignal[];
+  setup_status_counts: Record<string, number>;
 }
 
 export interface Trade {
@@ -229,6 +337,11 @@ export const api = {
       body: JSON.stringify({ inst_id, timeframe, days }),
     }),
   strategies: () => request<StrategyInfo[]>("/api/strategies"),
+  research: (strategy_id: string, strategy_version: string, start_ts: number, end_ts: number) =>
+    request<ResearchResult>("/api/research/analyze", {
+      method: "POST",
+      body: JSON.stringify({ strategy_id, strategy_version, start_ts, end_ts, inst_id: "BTC-USDT-SWAP" }),
+    }),
   runs: () => request<RunSummary[]>("/api/backtests"),
   run: (id: string) => request<RunDetail>(`/api/backtests/${id}`),
   createRun: (body: BacktestRequest) =>

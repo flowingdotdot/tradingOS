@@ -24,12 +24,21 @@ from tradingos.marketdata.store import CandleStore
 from tradingos.marketdata.validation import validate_candles
 from tradingos.risk.engine import RiskConfig
 from tradingos.services.backtest_service import BacktestInputError, run_and_store
+from tradingos.services.research_service import analyze_for_chart
 from tradingos.storage.runs import RunRepository
 from tradingos.strategy.registry import STRATEGY_CLASSES, load_versions
 
 DAY_MS = 86_400_000
 MAX_COLLECT_DAYS = 730
 MAX_CANDLES_RESPONSE = 50_000
+
+
+class ResearchRequest(BaseModel):
+    strategy_id: str = "ict_bearish_ote"
+    strategy_version: str = "v1-mss-close"
+    inst_id: str = "BTC-USDT-SWAP"
+    start_ts: int
+    end_ts: int
 
 
 class CollectRequest(BaseModel):
@@ -126,9 +135,21 @@ def create_app(
                 "description": cls.description,
                 "param_schema": cls.Params.model_json_schema(),
                 "versions": [v.model_dump() for v in versions if v.strategy_id == sid],
+                "required_timeframe": cls.required_timeframe,
+                "has_research_view": hasattr(cls, "analyze"),
             }
             for sid, cls in STRATEGY_CLASSES.items()
         ]
+
+    # -------------------------------------------------------------- research
+    @app.post("/api/research/analyze")
+    def research_analyze(req: ResearchRequest) -> dict:
+        """Features + setups for Strategy Lab. Research view only — no orders."""
+        try:
+            return analyze_for_chart(settings, req.strategy_id, req.strategy_version, req.inst_id,
+                                     req.start_ts, req.end_ts)
+        except (BacktestInputError, KeyError) as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     # ------------------------------------------------------------- backtests
     @app.post("/api/backtests")

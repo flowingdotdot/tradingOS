@@ -28,12 +28,15 @@ def check_causality(
     n_cuts: int = 80,
     full_prefix_checks: int = 3,
     seed: int = 0,
+    extra_cuts: list[int] | None = None,
 ) -> None:
     full = strategy.generate_signals(bars)
     validate_signals(full, bars)
     rng = np.random.default_rng(seed)
     lo = max(2, min(strategy.warmup_bars(), len(bars) - 2))
-    cuts = sorted(set(rng.integers(lo, len(bars), size=n_cuts).tolist()) | {len(bars) - 1})
+    cuts = set(rng.integers(lo, len(bars), size=n_cuts).tolist()) | {len(bars) - 1}
+    cuts |= {k for k in (extra_cuts or []) if 2 <= k <= len(bars)}
+    cuts = sorted(cuts)
     failures: list[int] = []
     for idx, k in enumerate(cuts):
         part = strategy.generate_signals(bars.iloc[:k].copy())

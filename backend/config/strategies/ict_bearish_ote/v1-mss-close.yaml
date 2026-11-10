@@ -1,0 +1,20 @@
+# Bearish OTE Continuation v1 — variant A: enter on 5m MSS close.
+# RESEARCH HYPOTHESIS. Every value below is a first research assumption, not an optimum.
+# Definitions: docs/STRATEGY_SPEC.md §2-§3.
+strategy_id: ict_bearish_ote
+version: v1-mss-close
+status: DRAFT
+description: "4H bearish bias, 15m impulse OTE∩FVG zone, 5m MSS trigger, market entry at next 5m open"
+params:
+  base_timeframe: 5m
+  swing:        {k_left: 3, k_right: 3, internal_k: 3, require_contiguous: true}
+  displacement: {enabled: true, method: median_body, lookback: 20, mult: 1.5}
+  bias:         {enabled: true, timeframe: 4H, mode: swing_sequence, recheck_at_trigger: true}
+  impulse:      {timeframe: 15m, break_kinds: [BOS, MSS], require_displacement: true}
+  fvg:          {enabled: true, min_size_mode: atr, min_size_atr: 0.1, atr_period: 14,
+                 require_displacement_middle: false, invalidation: close}
+  ote:          {enabled: true, low: 0.62, high: 0.79, ref: 0.705}
+  entry:        {trigger: mss, mode: mss_close, require_displacement_in_mss: true,
+                 setup_expiry_bars: 96, trigger_expiry_bars: 36, retest_expiry_bars: 12}
+  stop:         {mode: retracement_high, buffer_bps: 5.0}
+  target:       {mode: impulse_low, min_rr: 1.5}

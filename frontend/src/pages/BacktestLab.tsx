@@ -84,6 +84,10 @@ export function BacktestLab({ system }: { system: SystemInfo | null }) {
     [strategies],
   );
   const selectedVersion = versions.find((x) => x.key === strategyKey)?.v;
+  const requiredTf = strategies.find((s) => s.strategy_id === selectedVersion?.strategy_id)?.required_timeframe;
+  useEffect(() => {
+    if (requiredTf) setTf(requiredTf); // e.g. ICT strategy runs on 5m and builds 15m/4H itself
+  }, [requiredTf]);
 
   async function collect() {
     setBusy(`Collecting ${collectDays}d of ${tf} candles from OKX…`);
@@ -146,7 +150,7 @@ export function BacktestLab({ system }: { system: SystemInfo | null }) {
             <span>Instrument</span>
             <span className="mono">{INST}</span>
             <span>Timeframe</span>
-            <select value={tf} onChange={(e) => setTf(e.target.value)}>
+            <select value={tf} onChange={(e) => setTf(e.target.value)} disabled={!!requiredTf}>
               {Object.keys(TF_MS).map((t) => (
                 <option key={t}>{t}</option>
               ))}

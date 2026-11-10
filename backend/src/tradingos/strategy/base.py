@@ -19,6 +19,9 @@ import pandas as pd
 from pydantic import BaseModel
 
 SIGNAL_COLUMNS = ["entry", "stop", "target", "exit_long", "exit_short", "reason"]
+# Optional order details. NaN limit_price = market order at the next open (Phase-1 engine).
+# A finite limit_price requests a limit entry, which the engine supports from Phase 3.
+OPTIONAL_SIGNAL_COLUMNS = ["limit_price", "limit_expiry_bars"]
 
 
 def empty_signals(index: pd.Index) -> pd.DataFrame:
@@ -31,6 +34,8 @@ def empty_signals(index: pd.Index) -> pd.DataFrame:
             "exit_long": np.zeros(n, dtype=bool),
             "exit_short": np.zeros(n, dtype=bool),
             "reason": np.full(n, "", dtype=object),
+            "limit_price": np.full(n, np.nan),
+            "limit_expiry_bars": np.full(n, np.nan),
         },
         index=index,
     )
@@ -38,6 +43,9 @@ def empty_signals(index: pd.Index) -> pd.DataFrame:
 
 class Strategy(ABC):
     strategy_id: ClassVar[str]
+    # If set, the strategy only runs on this bar timeframe (e.g. "5m"); higher timeframes are
+    # built internally from it so that timeframe boundaries are handled in one place.
+    required_timeframe: ClassVar[str | None] = None
     description: ClassVar[str] = ""
     Params: ClassVar[type[BaseModel]]
 
@@ -51,6 +59,12 @@ class Strategy(ABC):
     @abstractmethod
     def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame:
         """bars: columns ts, open, high, low, close, volume (ascending, closed candles only)."""
+
+
+def has_limit_entries(signals: pd.DataFrame) -> bool:
+    return "limit_price" in signals.columns and bool(
+        np.isfinite(signals.loc[signals["entry"] != 0, "limit_price"].to_numpy(dtype=float)).any()
+    )
 
 
 def validate_signals(signals: pd.DataFrame, bars: pd.DataFrame) -> None:

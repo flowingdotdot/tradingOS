@@ -32,6 +32,9 @@ class BacktestConfig(BaseModel):
     start_ts: int
     end_ts: int
     initial_capital: float = Field(10_000.0, gt=0)
+    # Refuse to run when the stored history before start_ts is shorter than the strategy's
+    # warm-up (default). False = run anyway; early signals are suppressed and a note is recorded.
+    require_full_warmup: bool = True
     costs: CostModel = CostModel()
     risk: RiskConfig = RiskConfig()
 

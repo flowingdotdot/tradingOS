@@ -44,127 +44,204 @@ export interface Dataset {
   ok: boolean;
 }
 
-export interface StrategyVersion {
+// ------------------------------------------------------------------ strategy plugins
+// Everything here is generic: the UI is generated from these descriptions, never from names.
+export type ParamKind =
+  | "int" | "float" | "bool" | "enum" | "multi_enum" | "timeframe" | "percent" | "price" | "bps" | "session"
+  | "string" | "group";
+
+export interface ParamSpec {
+  path: string;
+  label: string;
+  description: string;
+  kind: ParamKind;
+  default: unknown;
+  nullable: boolean;
+  minimum: number | null;
+  maximum: number | null;
+  exclusive_minimum: number | null;
+  exclusive_maximum: number | null;
+  step: number | null;
+  unit: string | null;
+  options: unknown[] | null;
+  pattern: string | null;
+  depends_on: { path: string; in?: unknown[]; equals?: unknown } | null;
+  advanced: boolean;
+  group: string | null;
+}
+
+export interface ComponentSpec {
+  id: string;
+  label: string;
+  description: string;
+  role: "required" | "optional";
+  toggle_path: string | null;
+  on_value: unknown;
+  off_value: unknown;
+  requires: string[];
+}
+
+export interface StrategyConfig {
   strategy_id: string;
   version: string;
   status: string;
   description: string;
+  declared_params: Record<string, unknown>;
   params: Record<string, unknown>;
+  config_hash: string;
   params_hash: string;
+  definition_version: string;
+  source: "repo" | "user";
+  parent_version: string | null;
+  created_at: string | null;
+  integrity: "ok" | "modified" | "invalid";
+  error?: string;
 }
+/** @deprecated kept for older call sites */
+export type StrategyVersion = StrategyConfig;
 
 export interface StrategyInfo {
   strategy_id: string;
+  name: string;
+  definition_version: string;
+  category: string;
+  maturity: string;
   description: string;
-  versions: StrategyVersion[];
+  docs: string | null;
+  data: { base_timeframes: string[]; derived_timeframes: string[]; fields: string[]; instruments: string[]; notes: string };
   required_timeframe: string | null;
+  components: ComponentSpec[];
+  component_rules: { kind: string; components: string[]; message: string }[];
+  param_specs: ParamSpec[];
+  component_toggle_paths: string[];
+  default_params: Record<string, unknown>;
+  default_warmup_bars: number;
   has_research_view: boolean;
+  configs: StrategyConfig[];
+  versions: StrategyConfig[];
 }
 
-// ---------------------------------------------------------------- research (Strategy Lab)
-// Every item has `ts` (where it occurred / is drawn) and `known_ts` (first moment an algorithm
-// could know it — the close time of the confirming bar).
-export interface RSwing { kind: "high" | "low"; ts: number; price: number; known_ts: number; lag_bars: number }
-export interface RStructure {
-  kind: "BOS" | "MSS" | "SWEEP";
-  direction: number;
+export interface ValidationResult {
+  ok: boolean;
+  errors: { path: string; message: string }[];
+  resolved_params?: Record<string, unknown>;
+  params_hash?: string;
+  config_hash?: string;
+  warmup_bars?: number;
+  components?: Record<string, boolean>;
+}
+
+// ---------------------------------------------------------------- generic research view
+// Every item has `known_ts` (first moment it was knowable). t2 = null -> still open.
+interface ViewItemBase {
+  layer: string;
+  tf: string | null;
+  known_ts: number;
+}
+export interface ViewMarker extends ViewItemBase {
+  type: "marker";
   ts: number;
-  known_ts: number;
-  prior_trend: number;
-  ref_ts: number;
-  ref_price: number;
-  ref_known_ts: number;
-  has_displacement: boolean;
-  leg_extreme_ts: number | null;
-  leg_extreme_price: number | null;
+  position: "above" | "below";
+  shape: "circle" | "square" | "arrowUp" | "arrowDown";
+  color: string;
+  text: string;
+  size: number;
 }
-export interface RFvg {
-  direction: number;
-  ts: number;
-  first_ts: number;
-  known_ts: number;
-  bottom: number;
-  top: number;
-  touched_ts: number | null;
-  touched_known_ts: number | null;
-  filled_ts: number | null;
-  filled_known_ts: number | null;
-  invalidated_ts: number | null;
-  invalidated_known_ts: number | null;
+export interface ViewRect extends ViewItemBase {
+  type: "rect";
+  t1: number;
+  t2: number | null;
+  end_known_ts: number | null;
+  p1: number;
+  p2: number;
+  fill: string | null;
+  stroke: string | null;
+  dash: boolean;
+  label: string;
 }
-export interface RTf {
-  timeframe: string;
-  candles: { ts: number[]; open: number[]; high: number[]; low: number[]; close: number[] };
-  swings: RSwing[];
-  structure: RStructure[];
-  fvgs: RFvg[];
-  displacement: { ts: number; direction: number; known_ts: number }[];
+export interface ViewSegment extends ViewItemBase {
+  type: "segment";
+  t1: number;
+  t2: number | null;
+  end_known_ts: number | null;
+  price: number;
+  color: string;
+  width: number;
+  dash: boolean;
+  label: string;
 }
-export interface RZone {
-  bottom: number;
-  top: number;
-  fvg_ts: number | null;
-  fvg_bottom: number | null;
-  fvg_top: number | null;
-  fvg_known_ts: number | null;
-  inval_known_ts: number | null;
+export interface ViewBand extends ViewItemBase {
+  type: "band";
+  t1: number;
+  t2: number | null;
+  end_known_ts: number | null;
+  fill: string;
 }
-export interface RSetup {
-  id: number;
-  status: string;
-  reason: string;
-  break_kind: string;
-  break_ts: number;
-  a_ts: number;
-  a: number;
-  b_ts: number;
-  b: number;
-  known_ts: number;
-  impulse_tf: string;
-  equilibrium: number;
-  ote_low: number;
-  ote_high: number;
-  ote_ref: number;
-  zones: RZone[];
-  touched_ts: number | null;
-  trigger_ts: number | null;
-  trigger_known_ts: number | null;
-  mss_ref_ts: number | null;
-  mss_ref_price: number | null;
-  mode: string;
-  entry_ref: number | null;
-  stop: number | null;
-  target: number | null;
-  rr: number | null;
-  limit_price: number | null;
-  retest_outcome: { outcome: string; ts: number | null; same_bar_stop?: boolean } | null;
-  end_ts: number | null;
+export type ViewItem = ViewMarker | ViewRect | ViewSegment | ViewBand;
+
+export interface ViewTable {
+  id: string;
+  label: string;
+  columns: { key: string; label: string; kind: "ts" | "num" | "price" | "text" | "status" }[];
+  rows: Record<string, unknown>[];
+  known_key: string;
+  focus_from: string | null;
+  focus_to: string | null;
 }
-export interface RSignal {
-  ts: number;
-  known_ts: number;
-  side: number;
-  stop: number;
-  target: number;
-  limit_price: number | null;
-  reason: string;
+
+export interface ResearchView {
+  default_tf: string;
+  timeframes: Record<string, { ts: number[]; open: number[]; high: number[]; low: number[]; close: number[] }>;
+  tf_roles: Record<string, string>;
+  layers: { id: string; label: string; default_on: boolean }[];
+  items: ViewItem[];
+  lines: { layer: string; id: string; label: string; tf: string; color: string; bar_ms: number; ts: number[]; value: number[] }[];
+  bar_colors: { layer: string; tf: string; ts: number[]; color: string; bar_ms: number }[];
+  tables: ViewTable[];
+  summary: { label: string; value: unknown }[];
 }
+
 export interface ResearchResult {
   strategy_id: string;
+  strategy_name: string;
+  definition_version: string;
   strategy_version: string;
+  draft: boolean;
   params: Record<string, unknown>;
   params_hash: string;
+  config_hash: string;
+  components: Record<string, boolean>;
   code_revision: string;
   data_fingerprint: string;
+  inst_id: string;
+  timeframe: string;
   start_ts: number;
   end_ts: number;
-  base_timeframe: string;
-  roles: { base: string; impulse: string; bias: string };
-  timeframes: Record<string, RTf>;
-  bias: { known_ts: number; bias: number }[];
-  setups: RSetup[];
-  signals: RSignal[];
-  setup_status_counts: Record<string, number>;
+  view: ResearchView;
+}
+
+// --------------------------------------------------------------------------- instances
+export interface StrategyInstance {
+  instance_id: string;
+  strategy_id: string;
+  config_version: string;
+  config_hash: string;
+  params_hash: string;
+  definition_version: string;
+  inst_id: string;
+  timeframe: string;
+  environment: "BACKTEST" | "DEMO" | "LIVE";
+  capital_allocation: number;
+  risk: RiskConfig;
+  entries_enabled: boolean;
+  created_at: string;
+  note: string;
+}
+export interface InstanceDetail extends StrategyInstance {
+  readiness: { check: string; ok: boolean; detail: string }[];
+  ready: boolean;
+  runtime_status: string;
+  events: { ts: string; kind: string; detail: Record<string, unknown> }[];
 }
 
 export interface Trade {
@@ -265,6 +342,27 @@ export interface RunSummary {
 }
 
 export interface RunDetail extends RunSummary {
+  strategy?: {
+    strategy_id: string;
+    name: string;
+    definition_version: string;
+    config_version: string;
+    config_source: string;
+    config_hash: string;
+    params_hash: string;
+    components: Record<string, boolean>;
+  };
+  conditions?: {
+    inst_id: string;
+    timeframe: string;
+    start_ts: number;
+    end_ts: number;
+    initial_capital: number;
+    costs: CostModel;
+    risk: RiskConfig;
+    data_fingerprint: string;
+    warmup_bars: number;
+  };
   config: {
     initial_capital: number;
     costs: CostModel;
@@ -315,7 +413,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let detail = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
-      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      const d = body.detail;
+      detail =
+        typeof d === "string"
+          ? d
+          : d && Array.isArray(d.errors)
+            ? `${d.message}: ${d.errors.map((e: { path: string; message: string }) => `${e.path}: ${e.message}`).join("; ")}`
+            : JSON.stringify(d);
     } catch {
       /* non-JSON error body */
     }
@@ -337,11 +441,25 @@ export const api = {
       body: JSON.stringify({ inst_id, timeframe, days }),
     }),
   strategies: () => request<StrategyInfo[]>("/api/strategies"),
-  research: (strategy_id: string, strategy_version: string, start_ts: number, end_ts: number) =>
-    request<ResearchResult>("/api/research/analyze", {
-      method: "POST",
-      body: JSON.stringify({ strategy_id, strategy_version, start_ts, end_ts, inst_id: "BTC-USDT-SWAP" }),
-    }),
+  strategy: (id: string) => request<StrategyInfo>(`/api/strategies/${id}`),
+  validate: (id: string, params: Record<string, unknown>) =>
+    request<ValidationResult>(`/api/strategies/${id}/validate`, { method: "POST", body: JSON.stringify({ params }) }),
+  saveConfig: (id: string, body: { version: string; params: Record<string, unknown>; description: string; parent_version: string | null }) =>
+    request<StrategyConfig>(`/api/strategies/${id}/configs`, { method: "POST", body: JSON.stringify(body) }),
+  research: (body: {
+    strategy_id: string;
+    strategy_version?: string | null;
+    draft_params?: Record<string, unknown> | null;
+    timeframe?: string | null;
+    start_ts: number;
+    end_ts: number;
+  }) => request<ResearchResult>("/api/research/analyze", { method: "POST", body: JSON.stringify({ inst_id: "BTC-USDT-SWAP", ...body }) }),
+  instances: () => request<StrategyInstance[]>("/api/instances"),
+  instance: (id: string) => request<InstanceDetail>(`/api/instances/${id}`),
+  createInstance: (body: { strategy_id: string; config_version: string; timeframe: string; environment: string; capital_allocation: number }) =>
+    request<StrategyInstance>("/api/instances", { method: "POST", body: JSON.stringify(body) }),
+  setEntries: (id: string, enabled: boolean, reason = "") =>
+    request<StrategyInstance>(`/api/instances/${id}/entries`, { method: "POST", body: JSON.stringify({ enabled, reason }) }),
   runs: () => request<RunSummary[]>("/api/backtests"),
   run: (id: string) => request<RunDetail>(`/api/backtests/${id}`),
   createRun: (body: BacktestRequest) =>

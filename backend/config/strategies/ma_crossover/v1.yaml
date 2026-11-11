@@ -1,0 +1,12 @@
+# Plugin-architecture verification example. NOT a validated strategy.
+strategy_id: ma_crossover
+version: v1
+status: DRAFT
+description: "EMA 10/30 crossover, 2x ATR stop, 2R target, no filters"
+params:
+  ma_type: ema
+  fast_period: 10
+  slow_period: 30
+  direction: both
+  stop: {atr_period: 14, atr_mult: 2.0}
+  target: {reward_risk: 2.0}

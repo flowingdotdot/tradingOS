@@ -1,0 +1,15 @@
+# Same crossover with optional components ON (trend + volatility). Compare against v1.
+strategy_id: ma_crossover
+version: v2-filtered
+status: DRAFT
+parent_version: v1
+description: "v1 + EMA200 trend filter + ATR percentile 20-90 volatility filter"
+params:
+  ma_type: ema
+  fast_period: 10
+  slow_period: 30
+  direction: both
+  stop: {atr_period: 14, atr_mult: 2.0}
+  target: {reward_risk: 2.0}
+  trend_filter: {enabled: true, period: 200, ma_type: ema}
+  volatility_filter: {enabled: true, lookback: 100, min_percentile: 20, max_percentile: 90}

@@ -14,13 +14,15 @@ import {
 import { EquityChart } from "../components/EquityChart";
 import { MetricsGrid } from "../components/MetricsGrid";
 import { PriceChart } from "../components/PriceChart";
+import { ComparePanel } from "../components/ComparePanel";
 import { MonthlyTable, RunsTable, TradeTable } from "../components/Tables";
+import type { BacktestPreset } from "./StrategyLab";
 import { DAY_MS, fmtDate, fmtNum, fmtTs } from "../format";
 
 const TF_MS: Record<string, number> = { "1m": 60e3, "5m": 300e3, "15m": 900e3, "1H": 3600e3, "4H": 14400e3 };
 const INST = "BTC-USDT-SWAP";
 
-export function BacktestLab({ system }: { system: SystemInfo | null }) {
+export function BacktestLab({ system, preset }: { system: SystemInfo | null; preset: BacktestPreset | null }) {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -31,7 +33,8 @@ export function BacktestLab({ system }: { system: SystemInfo | null }) {
   const [error, setError] = useState<string | null>(null);
 
   // form state
-  const [strategyKey, setStrategyKey] = useState("ema_cross:v1");
+  const [strategyKey, setStrategyKey] = useState("");
+  const [compareIds, setCompareIds] = useState<string[]>([]);
   const [tf, setTf] = useState("15m");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
@@ -84,10 +87,22 @@ export function BacktestLab({ system }: { system: SystemInfo | null }) {
     [strategies],
   );
   const selectedVersion = versions.find((x) => x.key === strategyKey)?.v;
-  const requiredTf = strategies.find((s) => s.strategy_id === selectedVersion?.strategy_id)?.required_timeframe;
+  const selectedStrategy = strategies.find((s) => s.strategy_id === selectedVersion?.strategy_id);
+  const allowedTfs = selectedStrategy?.data.base_timeframes ?? Object.keys(TF_MS);
+  // no hard-coded default strategy: first discovered version, or the preset from Strategy Lab
   useEffect(() => {
-    if (requiredTf) setTf(requiredTf); // e.g. ICT strategy runs on 5m and builds 15m/4H itself
-  }, [requiredTf]);
+    if (!versions.length) return;
+    if (preset && versions.some((x) => x.key === `${preset.strategy_id}:${preset.version}`)) {
+      setStrategyKey(`${preset.strategy_id}:${preset.version}`);
+      setTf(preset.timeframe);
+    } else if (!versions.some((x) => x.key === strategyKey)) {
+      setStrategyKey(versions[0].key);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [versions, preset]);
+  useEffect(() => {
+    if (selectedStrategy && !selectedStrategy.data.base_timeframes.includes(tf)) setTf(selectedStrategy.data.base_timeframes[0]);
+  }, [selectedStrategy, tf]);
 
   async function collect() {
     setBusy(`Collecting ${collectDays}d of ${tf} candles from OKX…`);
@@ -150,8 +165,8 @@ export function BacktestLab({ system }: { system: SystemInfo | null }) {
             <span>Instrument</span>
             <span className="mono">{INST}</span>
             <span>Timeframe</span>
-            <select value={tf} onChange={(e) => setTf(e.target.value)} disabled={!!requiredTf}>
-              {Object.keys(TF_MS).map((t) => (
+            <select value={tf} onChange={(e) => setTf(e.target.value)} disabled={allowedTfs.length < 2}>
+              {allowedTfs.map((t) => (
                 <option key={t}>{t}</option>
               ))}
             </select>
@@ -266,7 +281,9 @@ export function BacktestLab({ system }: { system: SystemInfo | null }) {
 
       <section className="panel">
         <h2>Runs — compare versions</h2>
-        <RunsTable runs={runs} selected={run?.run_id ?? null} onSelect={(id) => openRun(id).catch((e) => setError(e.message))} />
+        <RunsTable runs={runs} selected={run?.run_id ?? null} onSelect={(id) => openRun(id).catch((e) => setError(e.message))}
+          compare={compareIds} onToggleCompare={(id) => setCompareIds((c) => (c.includes(id) ? c.filter((x) => x !== id) : [...c, id].slice(-6)))} />
+        {compareIds.length >= 2 && <ComparePanel ids={compareIds} onError={setError} />}
       </section>
 
       {run && (

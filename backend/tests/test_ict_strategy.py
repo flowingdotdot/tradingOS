@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 import synth
 from conftest import random_walk_bars, zero_cost_config
-from pydantic import ValidationError
 
 from tradingos.backtest.engine import run_backtest
 from tradingos.domain.instruments import BTC_USDT_SWAP
 from tradingos.domain.timeframes import Timeframe
 from tradingos.strategy.builtin.ict_ote import IctOteStrategy
 from tradingos.strategy.causality import check_causality
+from tradingos.strategy.schema import ConfigValidationError
 
 M5, M15 = Timeframe.M5, Timeframe.M15
 NO_BIAS = {"bias": {"enabled": False}}
@@ -120,7 +120,7 @@ def test_component_toggles():
     zs = only_setup(a)["zones"]
     assert zs and all((z["bottom"], z["top"]) == (z["fvg_bottom"], z["fvg_top"]) for z in zs)
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ConfigValidationError):
         IctOteStrategy({"fvg": {"enabled": False}, "ote": {"enabled": False}})
 
     _, _, a = analyze(displacement={"enabled": False})

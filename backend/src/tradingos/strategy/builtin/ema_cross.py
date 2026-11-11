@@ -8,34 +8,57 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 
 from tradingos.strategy.base import Strategy, empty_signals
 from tradingos.strategy.indicators import atr, ema
+from tradingos.strategy.schema import ComponentSpec, DataRequirements, StrategyDefinition, param
 
 
 class EmaCrossParams(BaseModel):
-    fast_period: int = Field(20, ge=2)
-    slow_period: int = Field(50, ge=3)
-    atr_period: int = Field(14, ge=2)
-    atr_stop_mult: float = Field(2.0, gt=0)
-    reward_risk: float | None = Field(2.0, gt=0)
-    allow_long: bool = True
-    allow_short: bool = True
-    exit_on_opposite_cross: bool = True
-
-    @model_validator(mode="after")
-    def _fast_lt_slow(self) -> EmaCrossParams:
-        if self.fast_period >= self.slow_period:
-            raise ValueError("fast_period must be < slow_period")
-        return self
+    fast_period: int = param(20, label="Fast EMA period", unit="bars", ge=2, le=500, step=1)
+    slow_period: int = param(50, label="Slow EMA period", unit="bars", ge=3, le=1000, step=1)
+    atr_period: int = param(14, label="ATR period", unit="bars", ge=2, le=200, step=1)
+    atr_stop_mult: float = param(2.0, label="Stop distance", unit="× ATR", gt=0, le=20, step=0.1)
+    reward_risk: float | None = param(2.0, label="Target", unit="R", gt=0, le=20, step=0.1,
+                                      description="Target = reward/risk multiple of the stop distance; empty = none")
+    allow_long: bool = param(True, label="Allow long entries")
+    allow_short: bool = param(True, label="Allow short entries")
+    exit_on_opposite_cross: bool = param(True, label="Exit on opposite cross")
 
 
 class EmaCrossStrategy(Strategy):
-    strategy_id = "ema_cross"
-    description = "EMA crossover with ATR stop and fixed reward/risk target (educational example)."
+    definition = StrategyDefinition(
+        strategy_id="ema_cross",
+        name="EMA Cross (Phase 1 example)",
+        definition_version="1.0.0",
+        category="example",
+        maturity="educational",
+        description="EMA crossover with ATR stop and fixed reward/risk target. Phase-1 pipeline example, kept so "
+                    "that existing run records stay reproducible. New work: use ma_crossover.",
+        data=DataRequirements(base_timeframes=["5m", "15m", "1H", "4H"], instruments=["BTC-USDT-SWAP"]),
+        components=[
+            ComponentSpec(id="crossover", label="EMA crossover entry", role="required"),
+            ComponentSpec(id="opposite_exit", label="Exit on opposite cross", role="optional",
+                          toggle_path="exit_on_opposite_cross"),
+        ],
+        docs="docs/strategies/ema_cross.md",
+    )
     Params = EmaCrossParams
     params: EmaCrossParams
+
+    def validate_config(self) -> list[dict[str, str]]:
+        p, errors = self.params, []
+        if p.fast_period >= p.slow_period:
+            errors.append({"path": "fast_period", "message": "fast_period must be < slow_period"})
+        if not (p.allow_long or p.allow_short):
+            errors.append({"path": "allow_long", "message": "enable at least one direction"})
+        return errors
+
+    def indicator_lines(self, bars):
+        c = bars["close"]
+        return [("ema_fast", f"EMA {self.params.fast_period}", ema(c, self.params.fast_period).to_numpy(), "accent"),
+                ("ema_slow", f"EMA {self.params.slow_period}", ema(c, self.params.slow_period).to_numpy(), "warn")]
 
     def warmup_bars(self) -> int:
         return max(self.params.slow_period * 3, self.params.atr_period * 3)

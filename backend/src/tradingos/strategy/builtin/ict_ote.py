@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 
 from tradingos.domain.timeframes import Timeframe
 from tradingos.features.displacement import displacement
@@ -33,100 +33,113 @@ from tradingos.features.ote import DealingRange, intersect
 from tradingos.features.structure import structure_events, swing_sequence_bias
 from tradingos.features.swings import detect_swings
 from tradingos.strategy.base import Strategy, empty_signals
+from tradingos.strategy.schema import (
+    ComponentRule,
+    ComponentSpec,
+    DataRequirements,
+    StrategyDefinition,
+    group,
+    param,
+)
 
 # ---------------------------------------------------------------------------- params
+# Every value is a FIRST RESEARCH HYPOTHESIS (docs/strategies/ict_ote.md), not an optimum.
 
 
 class SwingParams(BaseModel):
-    k_left: int = Field(3, ge=1, le=20)
-    k_right: int = Field(3, ge=1, le=20)
-    internal_k: int = Field(3, ge=1, le=20, description="k (left=right) for 5m internal structure / MSS")
-    require_contiguous: bool = True
+    k_left: int = param(3, label="Swing left bars", unit="bars", ge=1, le=20, step=1,
+                        description="A swing high must be strictly higher than this many bars on the left")
+    k_right: int = param(3, label="Swing right bars (confirmation delay)", unit="bars", ge=1, le=20, step=1,
+                         description="Bars that must CLOSE on the right before a swing is known")
+    internal_k: int = param(3, label="5m internal swing bars", unit="bars", ge=1, le=20, step=1,
+                            description="Left=right bars for the 5m internal structure used by the MSS trigger")
+    require_contiguous: bool = param(True, label="Reject swings across data gaps", advanced=True)
 
 
 class DisplacementParams(BaseModel):
-    enabled: bool = True
-    method: Literal["median_body", "atr"] = "median_body"
-    lookback: int = Field(20, ge=3)
-    mult: float = Field(1.5, gt=0)
-    atr_period: int = Field(14, ge=2)
-    atr_mult: float = Field(1.2, gt=0)
-    min_body_ratio: float | None = Field(None, gt=0, le=1)
+    enabled: bool = param(True, label="Use displacement",
+                          description="OFF removes every displacement requirement (impulse, MSS, FVG middle candle)")
+    method: Literal["median_body", "atr"] = param(
+        "median_body", label="Method", description="median_body: body vs median of prior bodies; atr: body vs ATR")
+    lookback: int = param(20, label="Median lookback", unit="bars", ge=3, le=500, step=1,
+                          depends_on={"path": "displacement.method", "in": ["median_body"]})
+    mult: float = param(1.5, label="Body >= median x", unit="x", gt=0, le=20, step=0.1,
+                        depends_on={"path": "displacement.method", "in": ["median_body"]})
+    atr_period: int = param(14, label="ATR period", unit="bars", ge=2, le=200, step=1,
+                            depends_on={"path": "displacement.method", "in": ["atr"]})
+    atr_mult: float = param(1.2, label="Body >= ATR x", unit="x", gt=0, le=20, step=0.1,
+                            depends_on={"path": "displacement.method", "in": ["atr"]})
+    min_body_ratio: float | None = param(None, label="Min body / range", gt=0, le=1, step=0.05, advanced=True)
 
 
 class BiasParams(BaseModel):
-    enabled: bool = True
-    timeframe: Literal["1H", "4H"] = "4H"
-    mode: Literal["swing_sequence", "last_break"] = "swing_sequence"
-    recheck_at_trigger: bool = True
+    enabled: bool = param(True, label="Use higher-timeframe bias filter")
+    timeframe: Literal["1H", "4H"] = param("4H", label="Bias timeframe")
+    mode: Literal["swing_sequence", "last_break"] = param(
+        "swing_sequence", label="Bias definition",
+        description="swing_sequence: last two confirmed highs lower AND lows lower; last_break: last structure break")
+    recheck_at_trigger: bool = param(True, label="Re-check bias at trigger")
 
 
 class ImpulseParams(BaseModel):
-    timeframe: Literal["5m", "15m", "1H"] = "15m"
-    break_kinds: list[Literal["BOS", "MSS"]] = ["BOS", "MSS"]
-    require_displacement: bool = True
+    timeframe: Literal["5m", "15m", "1H"] = param("15m", label="Setup (impulse) timeframe")
+    break_kinds: list[Literal["BOS", "MSS"]] = param(["BOS", "MSS"], label="Breaks that start an impulse")
+    require_displacement: bool = param(True, label="Impulse needs a displacement candle",
+                                       depends_on={"path": "displacement.enabled", "equals": True})
 
 
 class FvgParams(BaseModel):
-    enabled: bool = True
-    min_size_mode: Literal["atr", "none"] = "atr"
-    min_size_atr: float = Field(0.1, ge=0)
-    atr_period: int = Field(14, ge=2)
-    require_displacement_middle: bool = False
-    invalidation: Literal["close", "wick"] = "close"
+    enabled: bool = param(True, label="Use FVG in the entry zone")
+    min_size_mode: Literal["atr", "none"] = param("atr", label="Minimum size rule")
+    min_size_atr: float = param(0.1, label="Min size", unit="x ATR", ge=0, le=5, step=0.05,
+                                depends_on={"path": "fvg.min_size_mode", "in": ["atr"]})
+    atr_period: int = param(14, label="ATR period", unit="bars", ge=2, le=200, step=1, advanced=True)
+    require_displacement_middle: bool = param(False, label="Middle candle must be displacement")
+    invalidation: Literal["close", "wick"] = param("close", label="Invalidation rule")
 
 
 class OteParams(BaseModel):
-    enabled: bool = True
-    low: float = Field(0.62, gt=0, lt=1)
-    high: float = Field(0.79, gt=0, lt=1)
-    ref: float = Field(0.705, gt=0, lt=1)
-
-    @model_validator(mode="after")
-    def _order(self) -> OteParams:
-        if not self.low < self.high:
-            raise ValueError("ote.low must be < ote.high")
-        return self
+    enabled: bool = param(True, label="Use OTE retracement band")
+    low: float = param(0.62, label="OTE low", unit="ratio", gt=0, lt=1, step=0.005)
+    high: float = param(0.79, label="OTE high", unit="ratio", gt=0, lt=1, step=0.005)
+    ref: float = param(0.705, label="Reference level", unit="ratio", gt=0, lt=1, step=0.005)
 
 
 class EntryParams(BaseModel):
-    trigger: Literal["mss", "touch"] = "mss"
-    mode: Literal["mss_close", "fvg_retest"] = "mss_close"
-    require_displacement_in_mss: bool = True
-    setup_expiry_bars: int = Field(96, ge=1, description="impulse-TF bars from impulse known to zone touch")
-    trigger_expiry_bars: int = Field(36, ge=1, description="5m bars from zone touch to trigger")
-    retest_expiry_bars: int = Field(12, ge=1, description="5m bars a retest limit order stays open")
+    trigger: Literal["mss", "touch"] = param(
+        "mss", label="Trigger", description="mss: 5m bearish MSS after the zone touch; touch: the touch itself")
+    mode: Literal["mss_close", "fvg_retest"] = param(
+        "mss_close", label="Entry method",
+        description="mss_close: market at next 5m open; fvg_retest: limit at the MSS-leg 5m FVG (Phase-3 engine)")
+    require_displacement_in_mss: bool = param(True, label="MSS needs displacement",
+                                              depends_on={"path": "entry.trigger", "in": ["mss"]})
+    setup_expiry_bars: int = param(96, label="Setup expiry (to touch)", unit="impulse-TF bars", ge=1, le=10_000)
+    trigger_expiry_bars: int = param(36, label="Trigger expiry (after touch)", unit="5m bars", ge=1, le=10_000)
+    retest_expiry_bars: int = param(12, label="Retest limit expiry", unit="5m bars", ge=1, le=10_000,
+                                    depends_on={"path": "entry.mode", "in": ["fvg_retest"]})
 
 
 class StopParams(BaseModel):
-    mode: Literal["retracement_high", "impulse_high"] = "retracement_high"
-    buffer_bps: float = Field(5.0, ge=0)
+    mode: Literal["retracement_high", "impulse_high"] = param("retracement_high", label="Stop anchor")
+    buffer_bps: float = param(5.0, label="Stop buffer", unit="bps", kind="bps", ge=0, le=500, step=0.5)
 
 
 class TargetParams(BaseModel):
-    mode: Literal["impulse_low"] = "impulse_low"
-    min_rr: float = Field(1.5, gt=0)
+    mode: Literal["impulse_low"] = param("impulse_low", label="Target", description="Previous confirmed low (B)")
+    min_rr: float = param(1.5, label="Minimum planned reward/risk", unit="R", gt=0, le=20, step=0.1)
 
 
 class IctOteParams(BaseModel):
-    base_timeframe: Literal["5m"] = "5m"
-    swing: SwingParams = SwingParams()
-    displacement: DisplacementParams = DisplacementParams()
-    bias: BiasParams = BiasParams()
-    impulse: ImpulseParams = ImpulseParams()
-    fvg: FvgParams = FvgParams()
-    ote: OteParams = OteParams()
-    entry: EntryParams = EntryParams()
-    stop: StopParams = StopParams()
-    target: TargetParams = TargetParams()
-
-    @model_validator(mode="after")
-    def _consistency(self) -> IctOteParams:
-        if not (self.fvg.enabled or self.ote.enabled):
-            raise ValueError("at least one of fvg.enabled / ote.enabled is required to define an entry zone")
-        if self.entry.mode == "fvg_retest" and self.entry.trigger != "mss":
-            raise ValueError("entry.mode=fvg_retest requires entry.trigger=mss")
-        return self
+    base_timeframe: Literal["5m"] = param("5m", label="Execution timeframe")
+    swing: SwingParams = group(SwingParams, label="Swings")
+    displacement: DisplacementParams = group(DisplacementParams, label="Displacement")
+    bias: BiasParams = group(BiasParams, label="Higher-timeframe bias")
+    impulse: ImpulseParams = group(ImpulseParams, label="Impulse")
+    fvg: FvgParams = group(FvgParams, label="Fair value gap")
+    ote: OteParams = group(OteParams, label="OTE")
+    entry: EntryParams = group(EntryParams, label="Entry")
+    stop: StopParams = group(StopParams, label="Stop loss")
+    target: TargetParams = group(TargetParams, label="Target")
 
 
 # -------------------------------------------------------------------------- analysis
@@ -172,11 +185,44 @@ def _tf_features(bars: pd.DataFrame, tf: Timeframe, k_left: int, k_right: int, p
 
 
 class IctOteStrategy(Strategy):
-    strategy_id = "ict_bearish_ote"
-    description = "Bearish OTE Continuation (ICT-inspired research hypothesis; unvalidated)."
+    definition = StrategyDefinition(
+        strategy_id="ict_bearish_ote",
+        name="ICT Bearish OTE Continuation",
+        definition_version="1.0.0",
+        category="ict",
+        maturity="research",
+        description="4H bearish bias, 15m impulse with OTE/FVG entry zone, 5m MSS trigger, short toward the "
+                    "previous confirmed low. ICT-inspired research hypothesis - unvalidated.",
+        data=DataRequirements(base_timeframes=["5m"], derived_timeframes=["15m", "4H"],
+                              instruments=["BTC-USDT-SWAP"],
+                              notes="15m/4H are built from 5m bars (complete buckets only)."),
+        components=[
+            ComponentSpec(id="structure", label="Swing / BOS structure", role="required",
+                          description="Confirmed swings and close-based breaks define the impulse"),
+            ComponentSpec(id="impulse", label="Bearish impulse A->B", role="required"),
+            ComponentSpec(id="bias_filter", label="HTF bias filter", role="optional", toggle_path="bias.enabled"),
+            ComponentSpec(id="fvg_filter", label="FVG zone", role="optional", toggle_path="fvg.enabled"),
+            ComponentSpec(id="ote_filter", label="OTE zone", role="optional", toggle_path="ote.enabled"),
+            ComponentSpec(id="displacement", label="Displacement requirement", role="optional",
+                          toggle_path="displacement.enabled"),
+            ComponentSpec(id="mss_confirmation", label="5m MSS confirmation", role="optional",
+                          toggle_path="entry.trigger", on_value="mss", off_value="touch"),
+            ComponentSpec(id="fvg_retest_entry", label="FVG retest limit entry", role="optional",
+                          toggle_path="entry.mode", on_value="fvg_retest", off_value="mss_close",
+                          requires=["mss_confirmation"]),
+        ],
+        component_rules=[ComponentRule(kind="at_least_one", components=["fvg_filter", "ote_filter"],
+                                       message="an entry zone needs the FVG zone, the OTE zone, or both")],
+        docs="docs/strategies/ict_ote.md",
+    )
     Params = IctOteParams
     params: IctOteParams
-    required_timeframe = "5m"
+
+    def validate_config(self) -> list[dict[str, str]]:
+        o = self.params.ote
+        if not o.low < o.ref < o.high:
+            return [{"path": "ote", "message": "OTE requires low < ref < high"}]
+        return []
 
     def warmup_bars(self) -> int:
         p = self.params
@@ -188,6 +234,12 @@ class IctOteStrategy(Strategy):
 
     def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame:
         return self.analyze(bars).signals  # type: ignore[return-value]
+
+    def research_view(self, bars: pd.DataFrame, tf: Timeframe, start: int, end: int):
+        """Custom view: structure overlays + setup tables (see ict_ote_view.py)."""
+        from tradingos.strategy.builtin.ict_ote_view import build_ict_view
+
+        return build_ict_view(self.analyze(bars), start, end)
 
     # ------------------------------------------------------------------ analyze
     def analyze(self, bars: pd.DataFrame) -> Analysis:

@@ -23,6 +23,17 @@
 - [x] 합성 OHLC 시나리오 테스트 + 실데이터 인과성 테스트
 - [ ] 전략 버전 게시(publish) 시 불변 저장 → Phase 3로 이동
 
+## Phase 2.5 — Strategy Plugin Architecture ✅
+- [x] 아키텍처 감사 (ICT 전용 코드의 공통 영역 유입: research_service, Strategy Lab UI 전체, 하드코딩 기본값, 수동 레지스트리)
+- [x] Strategy Definition / Configuration / Instance 분리
+- [x] 플러그인 자동 발견 (로컬 패키지만), 메타데이터(데이터 요구사항·TF·종목·컴포넌트)
+- [x] 타입 파라미터 스키마 (`param()`/`group()` → ParamSpec), 컴포넌트 필수/선택·의존성·규칙 검증
+- [x] 불변 설정 버전 (config_hash / params_hash, repo YAML 무결성 검사, UI에서 새 버전 저장·복제)
+- [x] 범용 연구 화면 (ResearchView 도형) — ICT 차트 로직을 플러그인 안으로 이동
+- [x] 스키마 기반 자동 UI (파라미터 폼, 컴포넌트 토글, 실시간 검증), Backtest Lab 실행 비교 + 조건 차이 경고
+- [x] 인스턴스 (DEMO 준비 점검, 진입 ON/OFF, 이벤트 로그), 엔진 `entries_allowed`, 계좌 단위 중재 골격
+- [x] MA Crossover 플러그인으로 확장성 검증 (공통 파일 수정 0개), 계약 테스트, 스키마 기반 문서 생성
+
 ## Phase 3 — Backtesting 완성
 - [ ] 지정가 진입 체결 모델 (`fvg_retest` 변형 백테스트), 체결가 기준 최소 RR 재검사
 - [ ] 수년치 5m 데이터 수집 (현재 180일 → 신호 표본 부족)
@@ -32,13 +43,16 @@
 - [ ] 버전 간 비교 화면, 결과 내보내기(CSV/JSON) 확장
 - [ ] 다중 TF 백테스트 (5m 실행 + 15m/4H 맥락), 하위 TF로 봉 내부 SL/TP 모호성 해소 옵션
 - [ ] 파라미터 민감도 분석 + 데이터 스누핑 경고 (시도 횟수 기록)
-- [ ] 수명주기 상태 전이 (DRAFT → BACKTESTED → OUT_OF_SAMPLE_VALIDATED) 기록
+- [ ] 수명주기 상태 전이 (DRAFT → BACKTESTED → OUT_OF_SAMPLE_VALIDATED) 기록 + 증거(run id) 연결 API
+- [ ] 실험(시도) 기록: 같은 데이터로 비교한 설정 버전 수 → 데이터 스누핑 경고
+- [ ] 전략 간 비교 리포트 (동일 조건 강제 실행 모드)
 
 ## Phase 4 — Demo Trading
 - [ ] OKX 인증 클라이언트 (HMAC 서명, `x-simulated-trading: 1`), DEMO 전용 자격증명
 - [ ] WebSocket 캔들/주문/포지션 스트림, 재연결, REST 보충
 - [ ] 실시간 신호 루프 (동일 Strategy 코드)
-- [ ] Execution Engine: clOrdId 멱등성, 대사 후 재시도, 부분 체결, 거래소 측 SL 확인
+- [ ] Execution Engine: clOrdId 멱등성(`risk/portfolio.client_order_id`), 대사 후 재시도, 부분 체결, 거래소 측 SL 확인
+- [ ] 인스턴스 러너: `Strategy.update()` 루프 + `arbitrate()` + Risk Engine, 인스턴스별 성과 추적
 - [ ] 시작 시 대사, UNCERTAIN 상태, 킬스위치 영속화
 - [ ] 장애 주입 테스트 (Mock exchange: 타임아웃, 부분 체결, 단절, 재시작)
 

@@ -1,0 +1,210 @@
+# 전략: ICT Bearish OTE Continuation (`ict_bearish_ote`)
+
+> 상태: **연구 가설 (maturity: research) · 수명주기 DRAFT**. 수익성이 검증되지 않았다.
+> 모든 기본값은 **첫 번째 연구 가설**이며 최적값이 아니다. 유효성은 Phase 3 백테스트(IS/OOS, 워크포워드)로 검증한다.
+> 파라미터 전체 참조(자동 생성, 코드와 항상 일치): [generated/ict_bearish_ote.md](generated/ict_bearish_ote.md)
+> 플랫폼 공통 규칙(두 개의 시각, 다중 타임프레임, 인과성): [../STRATEGY_PLUGIN_SPEC.md](../STRATEGY_PLUGIN_SPEC.md)
+
+코드: `backend/src/tradingos/features/` (개념별 독립 모듈), `backend/src/tradingos/strategy/builtin/ict_ote.py` (조합),
+`ict_ote_view.py` (연구 화면). 설정: `backend/config/strategies/ict_bearish_ote/*.yaml`.
+
+## 개요
+4H 약세 바이어스 아래에서, 15m 약세 임펄스(A→B) 이후 OTE∩FVG 구역까지 되돌림이 오면 5m 약세 MSS로 확인하고
+이전 확정 저점(B)을 목표로 숏 진입한다.
+
+| 항목 | 내용 |
+|---|---|
+| 진입 조건 | §3.1–3.5 (바이어스 → 임펄스 → 구역 터치 → 5m MSS → 진입) |
+| 청산 조건 | 손절 = 되돌림 고점 + 버퍼 (§3.6), 목표 = B (§3.7). 반대 신호 청산 없음 |
+| 필수 데이터 | 5m OHLC (15m/4H는 내부에서 5m로 생성) |
+| 지원 종목 / 타임프레임 | BTC-USDT-SWAP / 실행 5m |
+| 필수 컴포넌트 | 스윙·BOS 구조, 15m 임펄스 |
+| 선택 컴포넌트 | HTF 바이어스, FVG 구역, OTE 구역 (둘 중 하나 이상), Displacement, 5m MSS 확인, FVG retest 지정가 진입 (MSS 확인 필요) |
+
+## 2. 개념 정의 (구현됨)
+
+### 2.1 Swing — `features/swings.py`
+파라미터 `k_left=3, k_right=3`, `require_contiguous=true`.
+- 스윙 고점: `H_i > max(H_{i−kL..i−1})` **그리고** `H_i ≥ max(H_{i+1..i+kR})`. 저점은 대칭.
+- **동일 고점/저점**: 왼쪽 엄격(>), 오른쪽 비엄격(≥) → 같은 값이 연속되면 **가장 먼저 나온 봉**만 스윙.
+- 한 봉이 스윙 고점이면서 저점일 수 있다 (outside bar) — 둘 다 기록.
+- `known_idx = i + kR`, `known_ts = ts_{i+kR} + Δ`. 오른쪽 kR개 봉이 모두 닫히기 전에는 존재하지 않는다(미확정 스윙은 출력되지 않음).
+- 창 `i−kL..i+kR` 안에 결측 봉이 있으면 스윙이 아니다.
+
+### 2.2 기준 스윙 선택 규칙 ("여러 swing이 존재할 때")
+- 시점 t의 **기준 고점/저점** = `known_idx < t` 인 스윙 중 **가장 최근에 확정된(known) 것**, 아직 종가로 돌파되지 않은 것.
+- 새 스윙이 확정되면 같은 종류의 이전 기준을 **대체**한다 (이전 것이 미돌파여도). → "가장 최근 구조가 우선".
+- 같은 시각에 확정되는 스윙은 고점·저점 각각 최대 1개(고정 k이므로)이며, outside bar는 둘 다 기준이 된다.
+
+### 2.3 BOS / MSS — `features/structure.py`
+- 약세 돌파: `C_t < 기준저점가` (**종가** 기준; 꼬리만 넘으면 돌파 아님). 강세 대칭.
+- 각 스윙은 한 번만 돌파된다. 돌파 후 새 스윙이 확정될 때까지 그 종류의 기준은 없다.
+- **추세 상태** = 직전 돌파의 방향 (첫 돌파 전 0).
+- **구분**: 돌파 방향 d에 대해 직전 추세가 `−d` 이면 **MSS**(직전 방향과 반대되는 돌파), 아니면 **BOS**(연속 또는 첫 돌파).
+- **연속된 BOS**: 같은 방향으로 새 스윙이 확정되고 다시 종가 돌파될 때마다 BOS가 하나씩 기록된다.
+- **MSS의 "유효한 내부 구조"**: 5m에서 `internal_k = 3` 스윙으로 같은 상태 기계를 돌린 결과. 내부 k는 별도 파라미터 (Phase 3에서 1, 2와 비교).
+- 돌파 레그: 약세 돌파의 `leg_extreme` = (돌파된 스윙, t] 구간 최고가; `has_displacement` = [leg_extreme 봉, t] 안에 약세 Displacement 존재 여부.
+
+### 2.4 Liquidity sweep — `features/structure.py`
+- 매수측 스윕: `H_t > 기준고점가` **그리고** `C_t ≤ 기준고점가` (꼬리로 넘고 종가 복귀). 매도측 대칭. 스윙당 1회.
+- 스윕은 추세를 바꾸지 않고 스윙을 소모하지 않는다 (이후 종가 돌파는 정상적으로 BOS/MSS).
+- 현재 전략 조건에는 쓰지 않으며 탐지·시각화만 한다 (향후 필터 후보).
+
+### 2.5 Displacement — `features/displacement.py`
+- **기본 (v1, `method: median_body`)**: `|C_t − O_t| ≥ 1.5 × median(|C−O|, 직전 20개 확정 봉)`, 기준값 > 0. 20개 미만이면 거짓.
+- **대안 (`method: atr`, 기존 제안 보존)**: `|C_t − O_t| ≥ 1.2 × ATR14(t−1)`.
+- 선택: `min_body_ratio` (몸통/전체범위 하한, 기본 비활성).
+- 방향: `C<O` 약세, `C>O` 강세. `known_ts` = 봉 t 종료.
+- "직전 20개"는 **행 기준** (시간 기준 아님) — 결측이 있어도 직전 20개 확정 봉.
+
+### 2.6 FVG — `features/fvg.py`
+- 3봉 (i−2, i−1, i, 연속이어야 함). 약세: `L_{i−2} > H_i` → `[H_i, L_{i−2}]`. 강세: `H_{i−2} < L_i` → `[H_{i−2}, L_i]`.
+- 발생 위치 = 가운데 봉(i−1), `known_ts` = 봉 i 종료.
+- **최소 크기**: `top − bottom ≥ 0.1 × ATR14(i)` (`min_size_mode: atr`); `none`이면 > 0.
+- 선택: 가운데 봉이 Displacement일 것 (`require_displacement_middle`, 기본 false — 순수 3캔들 정의).
+- **수명주기** (각각 별도 인식 시각): touched(가격이 구간 진입), filled(반대편 끝 도달), **invalidated**(기본: 종가가 반대편 끝을 넘음 `close`; 대안 `wick`).
+- **중첩 FVG**: 합치지 않고 각각 별도 구간으로 유지. 소비 측(진입 구역)이 규칙을 정한다 (§3.3).
+
+### 2.7 Dealing range / Premium·Discount / OTE — `features/ote.py`
+- 약세 임펄스 A(고점)→B(저점), `R = A − B`, `r(P) = (P − B)/R`. EQ = 0.5, Premium = r > 0.5.
+- OTE = `[B + 0.62R, B + 0.79R]`, 기준선 0.705.
+
+## 3. Bearish OTE Continuation v1 — 질문별 확정 정의
+
+### 3.1 4H 약세 바이어스 (`bias`)
+- 기본 `mode: swing_sequence`: 4H에서 **확정된** 최근 두 스윙 고점이 LH(낮아짐) **그리고** 최근 두 스윙 저점이 LL → −1. HH+HL → +1. 그 외 0.
+- 대안 `mode: last_break`: 4H 마지막 구조 돌파 방향.
+- 판정 시점: 셋업 활성화 시 (`bias = −1` 아니면 `bias_not_bearish`), 그리고 `recheck_at_trigger: true`이면 트리거 시 재확인 (`bias_lost`).
+- 4H 정보는 해당 4H 봉 종료 이후에만 5m 결정에 반영.
+
+### 3.2 임펄스의 시작점·끝점 (OTE 기준)
+- 15m 약세 돌파 이벤트(BOS 또는 MSS, `break_kinds`) 중 `has_displacement`(필수 시)인 것.
+- **시작점 A** = 돌파 레그 최고가 (돌파된 스윙 저점 이후 ~ 돌파 봉 사이 최고 고가).
+- **끝점 B** = 돌파 봉 **이후(포함)** 처음 나타나는 **확정** 15m 스윙 저점. → **임펄스는 B가 확정된 시각(`B.known_ts`)에 처음 알려진다.**
+- A 이후 B 확정 전까지 고가가 A를 넘으면 임펄스 무효.
+- 연속된 BOS가 같은 B로 귀결되면 하나의 임펄스로 합치고 **가장 높은 A**를 쓴다.
+
+### 3.3 진입 구역 (Entry zone)
+- 기본: `OTE ∩ FVG` — 임펄스 레그 안(첫 봉 ≥ A, 셋째 봉 ≤ B)에서 생긴 약세 15m FVG 각각과 OTE의 교집합. 비어 있지 않은 것들이 구역 목록.
+- 임펄스가 알려질 때 이미 무효화된 FVG는 제외. 이후에도 터치 전에 무효화된 FVG 구역은 제거 (모두 제거되면 `zones_invalidated`).
+- 토글: `fvg.enabled: false` → OTE 전체가 구역. `ote.enabled: false` → FVG 원래 구간이 구역. 둘 다 끄기는 허용하지 않음.
+- **터치**: 5m 고가 ≥ 유효 구역들의 최저 하단.
+
+### 3.4 15m setup과 5m trigger의 시간 순서
+1. 15m 임펄스가 알려짐 (`known_ts` = B 확정 15m 봉 종료) → 셋업 생성.
+2. **그 다음 5m 봉부터** 감시 (이미 지나간 5m 가격은 사용하지 않음).
+3. 터치 전: 5m 고가 > A → `invalidated`; 5m 저가 < B → `impulse_extended`; `setup_expiry_bars`(15m 96개 = 24h) 경과 → `expired_no_touch`.
+4. 터치 후 `trigger_expiry_bars`(5m 36개 = 3h) 안에 트리거가 없으면 `expired_no_trigger`.
+5. **트리거 (`trigger: mss`)**: 터치 봉 이후(같은 봉 포함) 5m **약세 MSS** — 5m 내부 추세가 강세(되돌림 중 강세 돌파 발생)였다가 약세 종가 돌파. 돌파된 내부 스윙은 **B 저점 이후에 형성된 것**이어야 하고, `require_displacement_in_mss: true`이면 MSS 레그에 Displacement 필요.
+6. 대안 `trigger: touch`: 터치 봉 자체가 트리거 (MSS 확인 없음, 비교용).
+
+### 3.5 진입 변형 (서로 다른 전략 버전)
+| 버전 | `entry.mode` | 진입 방식 | 백테스트 |
+|---|---|---|---|
+| `v1-mss-close` | `mss_close` | MSS 봉 종료 → **다음 5m 시가 시장가 숏** | Phase 1 엔진 지원 |
+| `v1-fvg-retest` | `fvg_retest` | MSS 후, MSS 레그(레그 최고점 이후 ~ MSS 봉)에서 생긴 **가장 최근 약세 5m FVG 하단에 지정가 숏** | **Phase 3** (엔진이 지정가 미지원 → 백테스트 API가 명시적으로 거부) |
+
+### 3.6 손절과 구조적 무효화
+- 손절 = `retracement_high × (1 + 5bps)`. retracement_high = B 저점이 찍힌 5m 봉부터 트리거 봉까지의 최고 고가. 대안 `stop.mode: impulse_high` → A 위.
+- 구조적 무효화 = 가격이 A를 넘음 (셋업 종료). 진입 후 무효화는 손절이 담당.
+
+### 3.7 목표가와 최소 손익비
+- 목표 = **이전 확정 저점 = 임펄스 끝점 B**.
+- 계획 손익비 `RR = (entry_ref − target) / (stop − entry_ref)`. entry_ref = MSS 봉 종가 (`mss_close`) 또는 지정가 (`fvg_retest`).
+- 목표가가 진입가 이상(반대편) → `rejected_target`. 손절이 진입가 이하 → `rejected_stop`. `RR < 1.5` → `rejected_rr`. **거부 시 목표를 조정해 억지로 맞추지 않는다.**
+- 주의: 시장가 진입은 다음 봉 시가에 체결되므로 실제 RR은 계획과 다를 수 있다 (Phase 3: 체결 기준 RR 재검사 옵션).
+
+### 3.8 미체결 주문 취소 (`fvg_retest`)
+- `retest_expiry_bars`(5m 12개 = 1h) 안에 체결 안 되면 취소.
+- 체결 전 가격이 목표가에 먼저 도달하면 취소 (기회 소멸).
+- 체결 전 손절가 도달 시 취소 (Phase 3 엔진에서 구현; 연구 화면은 가상 결과만 표시).
+
+### 3.9 여러 셋업의 우선순위와 중복 방지
+- 동시에 **활성 셋업은 1개**. 새 임펄스가 알려지면 신호를 내지 않은 기존 셋업은 `superseded`로 종료되고 새 셋업이 활성화 ("가장 최근 구조 우선").
+- 셋업 하나는 최대 1개의 신호만 낸다 (신호 후 `signal` 상태로 소모).
+- 같은 B로 귀결되는 임펄스는 하나로 합쳐 중복 셋업을 막는다. 보유 중 신호는 엔진이 `already_in_position`으로 거부.
+- 모든 셋업은 결과 상태(`signal`, `rejected_rr`, `bias_not_bearish`, `no_zone`, `invalidated`, `impulse_extended`, `expired_*`, `superseded` …)와 함께 기록된다 → "왜 진입하지 않았는가"도 연구 대상.
+
+## 4. 결정 기록 (Decision log)
+
+| # | 항목 | 결정 | 근거 / 상태 |
+|---|---|---|---|
+| 1 | 스윙 k | 3 (모든 TF, 5m 내부 포함) | 사용자 지정. 기존 제안 2와 충돌 → 사용자 확인 후 3 채택, `internal_k` 별도 파라미터 |
+| 2 | BOS 판정 | 종가 | 사용자 지정 = 기존 제안 |
+| 3 | MSS 내부 스윙 | 5m, k=3 | 사용자 확인 |
+| 4 | 진입 구역 | OTE ∩ FVG | 사용자 지정 = 기존 제안 |
+| 5 | 임펄스 끝 B 확정 | 스윙 확정까지 대기 | §3.2 (안전, 지연 있음) |
+| 6 | 목표가 | 이전 확정 저점(B) + 최소 1.5R | 사용자 지정 |
+| 7 | FVG 무효화 | 종가 (`close`), 대안 `wick` | §2.6 |
+| 8 | 4H 바이어스 | 확정 스윙 LH+LL (기존 §2.2 정의 유지), 대안 `last_break` | §3.1 |
+| 9 | Displacement | 중앙값 1.5배 (기본), ATR 1.2배 (대안 모드로 보존) | 기존 제안과 충돌 → 사용자 확인 후 "새 값 기본 + 기존 대안" |
+
+## 5. 설정 파라미터 (요약 — 전체/정확한 값은 generated 문서)
+
+| 그룹 | 키 | 기본값 | 의미 |
+|---|---|---|---|
+| swing | `k_left`, `k_right` | 3, 3 | 15m·4H 스윙 창 |
+| | `internal_k` | 3 | 5m 내부 구조(MSS) 스윙 창 |
+| | `require_contiguous` | true | 결측 봉이 낀 스윙 무효 |
+| displacement | `enabled` | true | 끄면 모든 Displacement 요구 해제 |
+| | `method` | median_body | `median_body` / `atr` |
+| | `lookback`, `mult` | 20, 1.5 | 중앙값 방식 |
+| | `atr_period`, `atr_mult` | 14, 1.2 | ATR 방식 |
+| | `min_body_ratio` | null | 몸통 비율 하한 |
+| bias | `enabled`, `timeframe`, `mode` | true, 4H, swing_sequence | |
+| | `recheck_at_trigger` | true | |
+| impulse | `timeframe` | 15m | |
+| | `break_kinds` | [BOS, MSS] | 임펄스로 인정할 돌파 종류 |
+| | `require_displacement` | true | |
+| fvg | `enabled` | true | |
+| | `min_size_mode`, `min_size_atr`, `atr_period` | atr, 0.1, 14 | |
+| | `require_displacement_middle` | false | |
+| | `invalidation` | close | `close` / `wick` |
+| ote | `enabled`, `low`, `high`, `ref` | true, 0.62, 0.79, 0.705 | |
+| entry | `trigger` | mss | `mss` / `touch` |
+| | `mode` | mss_close | `mss_close` / `fvg_retest` |
+| | `require_displacement_in_mss` | true | |
+| | `setup_expiry_bars` | 96 (15m) | 임펄스 인지 → 터치 |
+| | `trigger_expiry_bars` | 36 (5m) | 터치 → 트리거 |
+| | `retest_expiry_bars` | 12 (5m) | 지정가 유효시간 |
+| stop | `mode`, `buffer_bps` | retracement_high, 5 | |
+| target | `mode`, `min_rr` | impulse_low, 1.5 | |
+
+모든 실행 기록에는 버전·전체 파라미터·`params_hash`·코드 리비전·데이터 지문이 저장된다.
+
+## 6. 아직 주관적 판단이 남은 부분 (Phase 3에서 데이터로 비교할 대상)
+
+1. **연구 설계상 임의값**: FVG 최소 크기 0.1×ATR, 손절 버퍼 5bps, 만료 시간(24h/3h/1h), 워밍업 길이. 근거 있는 값이 아니라 "합리적 출발점"이다.
+2. **기준 스윙 대체 규칙** ("가장 최근 확정 스윙이 이전 미돌파 스윙을 대체")은 ICT 문헌의 여러 해석 중 하나다. 대안: 미돌파 스윙 전체 유지.
+3. **A의 정의**(돌파 레그 최고가)와 **B의 확정 대기**는 진입 시점을 늦춘다. 대안: B 잠정 확정.
+4. **15m 바이어스 vs 4H 중립 구간**: 실데이터에서 4H 바이어스가 0인 시간이 약 45% — 필터가 대부분의 셋업을 제거한다. 이것이 바람직한지는 데이터로 판단해야 한다.
+5. **mss_close의 구조적 약점**: MSS 확인 시점에는 가격이 이미 내려와 RR이 나빠지는 경향 (합성 시나리오에서 RR 0.42 사례). `fvg_retest`가 이를 개선하는지는 Phase 3 지정가 체결 모델이 필요하다.
+6. **표본 수**: 실데이터 180일에 v1-mss-close 신호가 한 자릿수 → 어떤 성과 지표도 통계적으로 의미가 없다. 기간 확대(수년치 데이터)가 필요하다.
+
+## 7. 위험 요소
+- **표본 부족**: 실데이터 180일에 신호 한 자릿수 → 성과 지표가 통계적으로 의미 없음.
+- **정의 민감도**: 스윙 k, 기준 스윙 대체 규칙, A/B 정의에 따라 신호가 크게 바뀐다 (과최적화 위험).
+- **mss_close의 RR 악화 경향**: 확인이 늦을수록 손절까지 거리가 멀어진다.
+- **4H 바이어스 중립 비중**: 약 45% 구간에서 필터가 모든 셋업을 차단.
+- **체결 가정**: 다음 봉 시가 체결 + 보수적 SL 우선. 실제 체결은 더 나쁠 수 있다.
+
+## 8. 구현 상태
+| 기능 | 상태 |
+|---|---|
+| 개념 탐지 (스윙, BOS/MSS, 스윕, Displacement, FVG, OTE) | 구현 |
+| 셋업 상태 기계 + 결과 상태 기록 | 구현 |
+| `v1-mss-close` 백테스트 | 구현 (공통 엔진) |
+| `v1-fvg-retest` 백테스트 | **미구현** — 지정가 체결 모델 필요 (Phase 3); 백테스트 API가 명시적으로 거부 |
+| 연구 화면 (플러그인 소유 커스텀 view) | 구현 |
+| 세션(킬존) 필터 | 미구현 (향후 선택 컴포넌트 후보) |
+
+## 9. 테스트 상태
+- `tests/test_features.py` — 개념별 합성 OHLC 시나리오 (동일 고점, 연속 BOS, 스윕, 미확정 스윙, FVG 중첩, 결측, TF 경계)
+- `tests/test_ict_strategy.py` — 정상 신호, RR 부족, 미도달, A 돌파, 목표 반대편, 중복 신호, 변형, 토글, 인과성(합성·무작위·실데이터)
+- `tests/test_plugin_contract.py` — 모든 플러그인 공통 계약 (인과성, 증분=일괄, 범용 view, 문서 최신성)
+
+## 10. 버전 및 변경 기록
+| 날짜 | definition | 설정 버전 | 변경 |
+|---|---|---|---|
+| 2026-11-11 | 1.0.0 | v1-mss-close, v1-fvg-retest | 최초 구현 (Phase 2) |
+| 2026-11-11 | 1.0.0 | — | 플러그인 아키텍처로 이전: 메타데이터·컴포넌트 선언, 연구 화면을 플러그인 내부로 이동. 신호 로직 변경 없음 (기존 테스트 전부 통과) |

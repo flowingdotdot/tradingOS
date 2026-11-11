@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type SystemInfo } from "./api";
 import { BacktestLab } from "./pages/BacktestLab";
-import { StrategyLab } from "./pages/StrategyLab";
+import { StrategyLab, type BacktestPreset } from "./pages/StrategyLab";
 
 type PageId = "dashboard" | "strategy" | "backtest" | "desk" | "journal" | "intel" | "settings";
 
@@ -74,7 +74,8 @@ function Dashboard({ system }: { system: SystemInfo | null }) {
 }
 
 export default function App() {
-  const [page, setPage] = useState<PageId>("backtest");
+  const [page, setPage] = useState<PageId>("strategy");
+  const [preset, setPreset] = useState<BacktestPreset | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [apiDown, setApiDown] = useState(false);
 
@@ -109,8 +110,10 @@ export default function App() {
           </div>
         )}
         {page === "dashboard" && <Dashboard system={system} />}
-        {page === "strategy" && <StrategyLab />}
-        {page === "backtest" && <BacktestLab system={system} />}
+        {page === "strategy" && (
+          <StrategyLab onBacktest={(p) => { setPreset(p); setPage("backtest"); }} />
+        )}
+        {page === "backtest" && <BacktestLab system={system} preset={preset} />}
         {PLACEHOLDER[page] && (
           <div className="page">
             <div className="page-head">

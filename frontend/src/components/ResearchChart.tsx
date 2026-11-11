@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   CandlestickSeries,
+  LineSeries,
   createChart,
   createSeriesMarkers,
   type IChartApi,
@@ -9,26 +10,29 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { ResearchResult } from "../api";
+import type { ResearchView } from "../api";
 import { baseChartOptions, readVar, toTime } from "./charts";
-import { buildOverlay, TF_MS, type LayerId } from "./researchOverlays";
 import { ShapesPrimitive } from "./ShapesPrimitive";
+import { buildViewOverlay, TF_MS } from "./viewOverlay";
 
 interface Props {
-  data: ResearchResult;
+  view: ResearchView;
+  viewKey: string;           // changes when a new analysis is loaded (re-fit the chart)
   tf: string;
-  layers: Set<LayerId>;
-  cutoff: number | null; // knowledge time (ms) or null = show everything
+  layers: Set<string>;
+  cutoff: number | null;     // knowledge time (ms) or null = show everything
   focus: { from: number; to: number } | null;
   onBarClick: (barOpenTs: number) => void;
 }
 
-export function ResearchChart({ data, tf, layers, cutoff, focus, onBarClick }: Props) {
+/** Strategy-agnostic research chart: renders any plugin's ResearchView. */
+export function ResearchChart({ view, viewKey, tf, layers, cutoff, focus, onBarClick }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const markers = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const shapes = useRef(new ShapesPrimitive());
+  const lineSeries = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const clickRef = useRef(onBarClick);
   clickRef.current = onBarClick;
   const fitKey = useRef("");
@@ -50,44 +54,67 @@ export function ResearchChart({ data, tf, layers, cutoff, focus, onBarClick }: P
     });
     chart.current = c;
     series.current = s;
+    const ls = lineSeries.current;
     return () => {
       c.remove();
+      ls.clear();
       chart.current = null;
     };
   }, []);
 
-  const overlay = useMemo(() => buildOverlay(data, tf, layers, cutoff), [data, tf, layers, cutoff]);
+  const overlay = useMemo(() => buildViewOverlay(view, tf, layers, cutoff), [view, tf, layers, cutoff]);
 
   useEffect(() => {
     const s = series.current;
-    if (!s) return;
-    const cd = data.timeframes[tf].candles;
+    const c = chart.current;
+    if (!s || !c) return;
+    const cd = view.timeframes[tf];
+    if (!cd) return;
     const barMs = TF_MS[tf];
     const rows = [];
     const times: number[] = [];
     for (let i = 0; i < cd.ts.length; i++) {
       // knowledge replay: only candles that had CLOSED by the cutoff are visible
       if (cutoff != null && cd.ts[i] + barMs > cutoff) break;
-      const disp = overlay.dispTs.has(cd.ts[i]);
+      const hl = overlay.barColors.get(cd.ts[i]);
       rows.push({
         time: toTime(cd.ts[i]),
         open: cd.open[i],
         high: cd.high[i],
         low: cd.low[i],
         close: cd.close[i],
-        ...(disp ? { color: cd.close[i] < cd.open[i] ? "#ff1744" : "#00e676", wickColor: "#e0e0e0" } : {}),
+        ...(hl ? { color: hl, wickColor: hl } : {}),
       });
       times.push(cd.ts[i]);
     }
     s.setData(rows);
-    markers.current?.setMarkers(overlay.markers.filter((m) => (m.time as number) * 1000 <= (times[times.length - 1] ?? 0)));
+    const lastTime = times[times.length - 1] ?? 0;
+    markers.current?.setMarkers(overlay.markers.filter((m) => (m.time as number) * 1000 <= lastTime));
     shapes.current.setShapes(overlay.shapes, times, barMs);
-    const key = `${data.strategy_version}|${data.start_ts}|${data.end_ts}|${tf}`;
+
+    // indicator lines (generic)
+    const wanted = new Set(overlay.lines.map((l) => l.id));
+    for (const [id, ls] of lineSeries.current) {
+      if (!wanted.has(id)) {
+        c.removeSeries(ls);
+        lineSeries.current.delete(id);
+      }
+    }
+    for (const l of overlay.lines) {
+      let ls = lineSeries.current.get(l.id);
+      if (!ls) {
+        ls = c.addSeries(LineSeries, { color: l.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: l.label });
+        lineSeries.current.set(l.id, ls);
+      }
+      ls.setData(l.points);
+    }
+
+    const key = `${viewKey}|${tf}`;
     if (fitKey.current !== key) {
-      chart.current?.timeScale().fitContent();
+      c.timeScale().fitContent();
       fitKey.current = key;
     }
-  }, [data, tf, overlay, cutoff]);
+  }, [view, viewKey, tf, overlay, cutoff]);
 
   useEffect(() => {
     if (!focus || !chart.current) return;

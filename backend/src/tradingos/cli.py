@@ -2,6 +2,8 @@
 
     tradingos collect --tf 15m --days 180
     tradingos backtest --strategy ema_cross --version v1 --tf 15m --days 120
+    tradingos strategies        # discovered plugins + configurations
+    tradingos docs              # regenerate parameter reference docs from schemas
     tradingos serve
 """
 
@@ -28,12 +30,15 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--days", type=int, default=180)
 
     b = sub.add_parser("backtest", help="run a backtest on stored data")
-    b.add_argument("--strategy", default="ema_cross")
-    b.add_argument("--version", default="v1")
+    b.add_argument("--strategy", required=True, help="strategy_id (see: tradingos strategies)")
+    b.add_argument("--version", required=True, help="configuration version")
     b.add_argument("--inst", default="BTC-USDT-SWAP")
     b.add_argument("--tf", default="15m", choices=[t.value for t in Timeframe])
     b.add_argument("--days", type=int, default=120)
     b.add_argument("--capital", type=float, default=10_000)
+
+    sub.add_parser("docs", help="regenerate docs/strategies/generated/*.md from plugin schemas")
+    sub.add_parser("strategies", help="list discovered strategy plugins and their configurations")
 
     s = sub.add_parser("serve", help="run the API server")
     s.add_argument("--host", default="127.0.0.1")
@@ -70,6 +75,21 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps({"run_id": run["run_id"], **{k: v for k, v in m.items() if k != "monthly"}},
                          indent=2, default=str))
         print("\nNOTE:", run["disclaimer"])
+    elif args.cmd == "docs":
+        from tradingos.strategy.docgen import write_all
+
+        for path in write_all():
+            print("wrote", path)
+    elif args.cmd == "strategies":
+        from tradingos.strategy.configs import ConfigStore
+        from tradingos.strategy.registry import STRATEGY_CLASSES
+
+        store = ConfigStore(settings.db_path, settings.strategy_config_dir)
+        for sid, cls in STRATEGY_CLASSES.items():
+            d = cls.definition
+            print(f"{sid}  [{d.category}/{d.maturity}]  def v{d.definition_version}  runs on {d.data.base_timeframes}")
+            for c in store.list(sid):
+                print(f"    {c['version']:24s} {c.get('status', ''):10s} {c['source']:5s} integrity={c['integrity']}")
     elif args.cmd == "serve":
         import uvicorn
 

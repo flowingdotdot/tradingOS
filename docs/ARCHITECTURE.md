@@ -33,8 +33,7 @@ tradingOS/
 │   ├── pyproject.toml
 │   ├── .env.example           # 환경변수 템플릿 (실제 .env는 git 제외)
 │   ├── config/
-│   │   └── strategies/        # 전략 버전별 YAML (불변 대상)
-│   │       └── ema_cross/v1.yaml
+│   │   └── strategies/        # 리뷰된 설정 버전 YAML (불변): <strategy_id>/<version>.yaml
 │   ├── src/tradingos/
 │   │   ├── config.py          # Settings, ExecutionEnvironment, LIVE 하드 가드
 │   │   ├── logging_setup.py   # 구조화(JSON) 로깅 + 비밀값 마스킹 필터
@@ -46,17 +45,23 @@ tradingOS/
 │   │   │   ├── collector.py   # 페이지네이션 수집 + 증분 동기화
 │   │   │   ├── validation.py  # 결측/중복/정렬/미완성 캔들 검사
 │   │   │   └── store.py       # Parquet 저장소
-│   │   ├── features/          # ICT 개념별 독립 모듈 (모든 이벤트에 ts + known_ts)
+│   │   ├── features/          # 재사용 가능한 특징 모듈 (모든 이벤트에 ts + known_ts)
 │   │   │   ├── swings.py, structure.py (BOS/MSS/sweep), displacement.py, fvg.py, ote.py
 │   │   │   └── mtf.py         # 5m → 15m/4H 생성, 인식 시각 기준 정렬
-│   │   ├── strategy/          # Strategy Engine
-│   │   │   ├── base.py        # Strategy 인터페이스, Signal 스키마
-│   │   │   ├── registry.py    # 전략 클래스 + YAML 버전 로딩
+│   │   ├── strategy/          # Strategy Engine (플러그인 플랫폼 — 전략 이름을 모름)
+│   │   │   ├── base.py        # Strategy 기반 클래스, 신호 계약, 증분 상태, 기본 연구 화면
+│   │   │   ├── schema.py      # StrategyDefinition, DataRequirements, param()/ParamSpec, 컴포넌트
+│   │   │   ├── view.py        # ResearchView: 범용 도형(marker/rect/segment/band/line/table)
+│   │   │   ├── registry.py    # 플러그인 자동 발견, 설정 해석(resolve), describe
+│   │   │   ├── configs.py     # ConfigStore: 불변 설정 버전 (repo YAML + user), 무결성 검사
+│   │   │   ├── instances.py   # Strategy Instance, ON/OFF, DEMO 준비 점검, 이벤트 로그
+│   │   │   ├── docgen.py      # 스키마 → docs/strategies/generated/*.md
 │   │   │   ├── causality.py   # look-ahead 검사기 (모든 전략 필수 통과)
 │   │   │   ├── indicators.py  # 인과적 지표 (EMA, ATR)
-│   │   │   └── builtin/       # ema_cross.py (교육용), ict_ote.py (연구 가설)
+│   │   │   └── builtin/       # ★ 플러그인: ema_cross, ma_crossover, ict_ote(+ict_ote_view)
 │   │   ├── risk/              # Risk Engine (백테스트·실거래 공용)
-│   │   │   └── engine.py
+│   │   │   ├── engine.py      # 인스턴스 단위 사이징·일일 한도·레버리지
+│   │   │   └── portfolio.py   # 계좌 단위 다중 전략 중재, 결정적 주문 ID (준비)
 │   │   ├── backtest/          # Backtesting Engine
 │   │   │   ├── models.py      # BacktestConfig, CostModel, Trade
 │   │   │   ├── engine.py      # 봉 단위 이벤트 루프 시뮬레이터
@@ -68,7 +73,7 @@ tradingOS/
 │   │   └── cli.py             # `tradingos` 명령줄
 │   └── tests/
 ├── frontend/
-│   └── src/ (App, pages/, components/, api.ts)
+│   └── src/ (App, pages/, components/, api.ts) — 스키마 기반 자동 UI, 전략별 코드 없음
 └── data/                      # 런타임 데이터 (git 제외)
     ├── market/okx/<instId>/<bar>.parquet
     └── tradingos.sqlite
@@ -84,7 +89,20 @@ tradingOS/
 - **봉 i의 정보는 봉 i가 닫힌 시점(`ts_i + 봉길이`)에만 사용 가능하다.** 이 시점의 의사결정은 가장 빨라도 봉 i+1 시가에 체결된다.
 - OKX의 `confirm="0"` (미완성) 캔들은 **저장 단계에서 버린다.** 따라서 저장소에는 확정 캔들만 존재한다.
 
-### 3.2 전략 인터페이스와 look-ahead 방지
+### 3.2 Strategy Plugin Architecture
+상세 계약: [STRATEGY_PLUGIN_SPEC.md](STRATEGY_PLUGIN_SPEC.md) · 등록/버전: [STRATEGY_REGISTRY.md](STRATEGY_REGISTRY.md)
+
+```
+Definition (플러그인 코드, builtin/*.py)  ──►  Configuration (불변 params 버전, hash)  ──►  Instance (TF·종목·환경·ON/OFF·한도)
+        │ describe()                                   │ resolve/validate                        │
+        ▼                                              ▼                                         ▼
+  /api/strategies ── 자동 UI (폼·토글·차트)     Backtest Engine (단일, 공통)          Risk Engine → (Phase 4) Execution
+```
+- 플랫폼(엔진·레지스트리·API·UI)은 **전략 이름을 모른다.** 플러그인이 선언한 메타데이터·스키마·연구 화면 도형만 사용한다.
+- 새 전략 = 플러그인 파일 + YAML + 테스트 + 문서. 실제로 `ma_crossover`를 공통 파일 수정 0개로 추가해 검증했다.
+- 모든 플러그인에 계약 테스트가 자동 적용된다 (`tests/test_plugin_contract.py`).
+
+### 3.2.1 전략 인터페이스와 look-ahead 방지
 ```python
 class Strategy:
     def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame: ...
@@ -94,6 +112,8 @@ class Strategy:
   두 경로가 같은 결과를 내는지는 아래 테스트로 보장한다.
 - **인과성 테스트(prefix-invariance test, `strategy/causality.py`)**: 무작위 80개 절단 지점 k에서 `generate_signals(bars[:k])`의 마지막 행이 전체 계산의 k−1행과 같아야 한다 (일부 지점은 전체 구간 비교). 누설은 흔히 *잘린 구간의 마지막 행에서만*, *미래가 달라질 때만* 드러나므로 소수 지점 검사로는 놓친다 (실제로 초기 구현에서 2개 지점 검사가 `shift(-1)` 누설을 놓쳤다). 미래 데이터를 참조하는 전략(예: `shift(-1)`, 중심 이동평균, 전체 구간 정규화)은 이 테스트에서 실패한다. **모든 전략은 이 테스트를 통과해야 등록된다.**
 - 전략은 "진입 의도(side, stop, target)"만 낸다. 수량 결정·승인은 Risk Engine의 책임이다.
+- 실시간 경로: `create_state()` + `update(state, bar)` — 계약 테스트가 "증분 결과 == 일괄 결과"를 모든 플러그인에 대해 검증한다.
+- 전략 OFF = 신규 진입 중단. 엔진은 `entries_allowed` 마스크로 이를 표현하며 기존 포지션의 손절·목표 관리는 계속된다.
 
 ### 3.3 백테스트 체결 모델 (보수적 가정)
 | 상황 | 처리 |

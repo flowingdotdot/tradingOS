@@ -16,6 +16,7 @@ from tradingos.domain.timeframes import Timeframe
 from tradingos.strategy.base import Strategy, empty_signals
 from tradingos.strategy.causality import LookAheadError, check_causality
 from tradingos.strategy.registry import build_strategy, load_versions
+from tradingos.strategy.schema import DataRequirements, StrategyDefinition
 
 VERSIONS = load_versions(BACKEND_DIR / "config" / "strategies")
 
@@ -52,7 +53,10 @@ class _NoParams(BaseModel):
 class _PeekingStrategy(Strategy):
     """Deliberately cheats by looking one bar ahead — the guard must catch it."""
 
-    strategy_id = "peek"
+    definition = StrategyDefinition(
+        strategy_id="peek_test", name="Peek (test)", definition_version="0.0.1", category="example",
+        description="look-ahead test double", data=DataRequirements(base_timeframes=["15m"], instruments=["*"]),
+    )
     Params = _NoParams
 
     def warmup_bars(self) -> int:

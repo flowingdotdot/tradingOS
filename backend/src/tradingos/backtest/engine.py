@@ -66,8 +66,14 @@ def _funding_times_between(prev_ts: int, ts: int) -> int:
 
 
 def run_backtest(
-    bars: pd.DataFrame, signals: pd.DataFrame, config: BacktestConfig, instrument: InstrumentSpec
+    bars: pd.DataFrame,
+    signals: pd.DataFrame,
+    config: BacktestConfig,
+    instrument: InstrumentSpec,
+    entries_allowed: np.ndarray | None = None,
 ) -> BacktestResult:
+    """entries_allowed[i] = False blocks NEW entries at bar i (strategy switched OFF) while open
+    positions keep being managed by their stop/target/exit rules."""
     validate_signals(signals, bars)
     if has_limit_entries(signals):
         raise NotImplementedError("limit entries are not supported by the Phase-1 engine (planned for Phase 3)")
@@ -158,6 +164,9 @@ def run_backtest(
         pending_exit = False
 
         # 1b. scheduled entry at this open
+        if pending_entry is not None and entries_allowed is not None and not entries_allowed[i]:
+            rejections.append(Rejection(ts=int(ts[i]), side=int(s_entry[pending_entry]), reason="entries_disabled"))
+            pending_entry = None
         if pending_entry is not None:
             j = pending_entry
             side = int(s_entry[j])

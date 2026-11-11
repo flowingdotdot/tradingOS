@@ -98,10 +98,14 @@ export function RunsTable({
   runs,
   selected,
   onSelect,
+  compare = [],
+  onToggleCompare,
 }: {
   runs: RunSummary[];
   selected: string | null;
   onSelect: (id: string) => void;
+  compare?: string[];
+  onToggleCompare?: (id: string) => void;
 }) {
   if (!runs.length) return <p className="empty">No runs yet.</p>;
   return (
@@ -109,6 +113,7 @@ export function RunsTable({
       <table>
         <thead>
           <tr>
+            {onToggleCompare && <th title="select 2+ runs to compare">Cmp</th>}
             <th>Run</th>
             <th>Strategy</th>
             <th>TF</th>
@@ -125,6 +130,11 @@ export function RunsTable({
         <tbody>
           {runs.map((r) => (
             <tr key={r.run_id} className={selected === r.run_id ? "sel" : ""} onClick={() => onSelect(r.run_id)}>
+              {onToggleCompare && (
+                <td onClick={(e) => e.stopPropagation()}>
+                  <input type="checkbox" checked={compare.includes(r.run_id)} onChange={() => onToggleCompare(r.run_id)} />
+                </td>
+              )}
               <td className="mono" title={r.created_at}>{r.run_id}</td>
               <td>
                 {r.strategy_id}:{r.strategy_version}

@@ -17,7 +17,9 @@ from tradingos.marketdata.store import CandleStore, data_fingerprint
 from tradingos.marketdata.validation import validate_candles
 from tradingos.storage.runs import RunRepository
 from tradingos.strategy.base import has_limit_entries
-from tradingos.strategy.registry import build_strategy, get_version
+from tradingos.strategy.configs import ConfigIntegrityError, ConfigStore
+from tradingos.strategy.instances import check_data_requirements
+from tradingos.strategy.registry import build_strategy
 
 DISCLAIMER = (
     "Hypothetical simulation on historical data with assumed costs. "
@@ -44,21 +46,25 @@ def code_revision() -> str:
         return "unknown"
 
 
-def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepository) -> dict[str, Any]:
+def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepository,
+                  configs: ConfigStore | None = None) -> dict[str, Any]:
+    """One engine for every strategy: the plugin only supplies signals."""
     assert_environment_allowed(ExecutionEnvironment.BACKTEST)
-    version = get_version(settings.strategy_config_dir, config.strategy_id, config.strategy_version)
+    configs = configs or ConfigStore(settings.db_path, settings.strategy_config_dir)
+    try:
+        version = configs.get(config.strategy_id, config.strategy_version)
+    except ConfigIntegrityError as exc:
+        raise BacktestInputError(str(exc)) from exc
     tf = Timeframe(config.timeframe)
     instrument = KNOWN_INSTRUMENTS.get(config.inst_id)
     if instrument is None:
         raise BacktestInputError(f"unknown instrument {config.inst_id}")
+    req_errors = check_data_requirements(version.strategy_id, config.inst_id, tf.value)
+    if req_errors:
+        raise BacktestInputError("; ".join(req_errors))
 
     store = CandleStore(settings.market_data_dir)
     strategy = build_strategy(version.strategy_id, version.params)
-    if strategy.required_timeframe and strategy.required_timeframe != tf.value:
-        raise BacktestInputError(
-            f"{version.strategy_id} runs on {strategy.required_timeframe} bars (higher timeframes are built "
-            f"from them); got {tf.value}"
-        )
     # Load extra history before start_ts so indicators are warmed up; trading is only
     # allowed from start_ts onwards (signals before it are discarded).
     warm_start = config.start_ts - strategy.warmup_bars() * tf.ms
@@ -80,6 +86,12 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
         raise BacktestInputError(f"stored data failed validation: {quality.to_dict()}")
     warmup_available = first
     notes: list[str] = []
+    if warmup_available < strategy.warmup_bars() and config.require_full_warmup:
+        raise BacktestInputError(
+            f"insufficient history: {strategy.warmup_bars()} {tf.value} bars of warm-up are required before the "
+            f"start date but only {warmup_available} are stored. Collect more data or move the start later "
+            "(missing data is never generated)."
+        )
     if warmup_available < strategy.warmup_bars():
         notes.append(
             f"Only {warmup_available} warm-up bars available before start (strategy wants "
@@ -115,9 +127,31 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
     }
     summary = {k: metrics[k] for k in ("total_trades", "net_profit", "return_pct", "win_rate_pct",
                                        "profit_factor", "max_drawdown_pct", "expectancy_r")}
+    definition = strategy.definition
     payload = {
         "config": config.model_dump(),
         "params": version.params,
+        "strategy": {
+            "strategy_id": definition.strategy_id,
+            "name": definition.name,
+            "definition_version": definition.definition_version,
+            "config_version": version.version,
+            "config_source": version.source,
+            "config_hash": version.config_hash,
+            "params_hash": version.params_hash,
+            "declared_params": version.declared_params,
+            "resolved_params": version.params,
+            "components": strategy.component_states(),
+        },
+        "conditions": {
+            "inst_id": config.inst_id, "timeframe": tf.value, "start_ts": config.start_ts, "end_ts": config.end_ts,
+            "initial_capital": config.initial_capital, "costs": config.costs.model_dump(),
+            "risk": config.risk.model_dump(),
+            # test-window data (what results are compared on) vs. full input incl. strategy warm-up
+            "data_fingerprint": data_fingerprint(bars_t),
+            "input_fingerprint": data_fingerprint(bars),
+            "warmup_bars": strategy.warmup_bars(),
+        },
         "metrics": metrics,
         "trades": [t.model_dump() for t in result.trades],
         "rejections": [r.model_dump() for r in result.rejections],

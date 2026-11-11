@@ -35,7 +35,7 @@ Trading OS는 **연구 → 검증 → 모의 운용 → (먼 훗날) 실거래**
 - Python 모듈 기반 전략 + YAML 파라미터.
 - 진입/청산 조건, 손절(SL)/익절(TP), 포지션 사이징, 리스크 제약을 전략이 **제안**하고 Risk Engine이 **승인**한다.
 - 전략 버전은 게시(publish) 후 **불변(immutable)**.
-- 초기 연구 대상: ICT 계열 개념(시장 구조, 스윙, BOS/MSS, Displacement, FVG, Dealing Range, Premium/Discount, OTE, Liquidity sweep). 모든 개념은 [STRATEGY_SPEC.md](STRATEGY_SPEC.md)에서 수학적으로 정의한 뒤 구현한다.
+- 초기 연구 대상: ICT 계열 개념(시장 구조, 스윙, BOS/MSS, Displacement, FVG, Dealing Range, Premium/Discount, OTE, Liquidity sweep). 모든 개념은 [strategies/ict_ote.md](strategies/ict_ote.md)에서 수학적으로 정의한 뒤 구현한다. 전략 추가 방식: [STRATEGY_PLUGIN_SPEC.md](STRATEGY_PLUGIN_SPEC.md).
 - 향후: 모멘텀, 평균회귀, 돌파, 통계적 전략. 노드 기반 비주얼 에디터.
 
 ### 3.2 Backtest Lab (요구사항 요약)

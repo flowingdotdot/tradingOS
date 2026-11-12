@@ -145,3 +145,38 @@ def test_provenance_sidecar_records_source_coverage_and_fingerprint(tmp_path):
     assert m2["history"][0]["fingerprint"] != m2["history"][1]["fingerprint"]   # the change is traceable
     assert read_provenance(store, "X", TF)["source"] == "https://example/api"
     assert store.datasets() == [("X", TF)]                                      # sidecar is not a dataset
+
+
+def test_interrupted_sync_keeps_progress_and_resumes(tmp_path):
+    """A long collection that dies midway must not lose what it already fetched."""
+    store = CandleStore(tmp_path)
+    last = T0 + 999 * TF.ms
+    fake = FakeOkx(TF, T0, last)
+    calls = {"n": 0}
+
+    def flaky(request):
+        calls["n"] += 1
+        if calls["n"] > 6:                                   # the process "dies" after 6 requests
+            return httpx.Response(200, json={"code": "51000", "msg": "simulated crash", "data": []})
+        return fake.handler(request)
+
+    with OkxPublicClient(transport=httpx.MockTransport(flaky), sleep=lambda s: None) as c:
+        with pytest.raises(OkxApiError):
+            sync_history(c, store, "BTC-USDT-SWAP", TF, T0, last + TF.ms, chunk_bars=200)
+    partial = store.load("BTC-USDT-SWAP", TF)
+    assert 200 <= len(partial) < 1000                         # progress was saved
+    assert validate_candles(partial, TF).missing_bars == 0   # and is contiguous (newest chunks first)
+    assert int(partial["ts"].iloc[-1]) == last
+
+    with client_for(fake) as c:                               # re-run: only the missing older part
+        r = sync_history(c, store, "BTC-USDT-SWAP", TF, T0, last + TF.ms, chunk_bars=200)
+    assert r.stored_rows == 1000 and r.fetched == 1000 - len(partial) and r.validation.missing_bars == 0
+
+
+def test_sync_stops_walking_back_before_the_listing_date(tmp_path):
+    store = CandleStore(tmp_path)
+    last = T0 + 299 * TF.ms
+    fake = FakeOkx(TF, T0, last)
+    with client_for(fake) as c:
+        r = sync_history(c, store, "BTC-USDT-SWAP", TF, T0 - 100_000 * TF.ms, last + TF.ms, chunk_bars=200)
+    assert r.stored_rows == 300 and len(fake.requests) < 15  # does not probe 500 empty chunks

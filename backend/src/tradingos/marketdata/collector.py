@@ -67,6 +67,7 @@ def sync_history(
     tf: Timeframe,
     start_ts: int,
     end_ts: int | None = None,
+    chunk_bars: int = 20_000,
 ) -> CollectResult:
     """Ensure the store covers [start_ts, end_ts). Only fetches the parts not already stored
     (older-than-stored and newer-than-stored); interior gaps are re-requested too."""
@@ -88,22 +89,31 @@ def sync_history(
             if gap.end_ts >= start_ts and gap.start_ts < end_ts:
                 ranges.append((gap.start_ts, gap.end_ts + tf.ms))
 
-    fetched_frames, dropped, requests = [], 0, 0
+    # Fetch in chunks and persist after each one, newest chunk first, so the stored data stays
+    # contiguous and an interrupted run keeps its progress (a re-run only fetches what is missing).
+    n_fetched, dropped, requests = 0, 0, 0
+    stored = existing
+    chunk_ms = chunk_bars * tf.ms
     for a, b in ranges:
-        df, d, r = fetch_range(client, inst_id, tf, a, b)
-        dropped += d
-        requests += r
-        if not df.empty:
-            fetched_frames.append(df)
-        log.info("fetched range", extra={"inst_id": inst_id, "tf": tf.value, "start": a, "end": b, "rows": len(df)})
+        hi = b
+        while hi > a:
+            lo = max(a, hi - chunk_ms)
+            df, d, r = fetch_range(client, inst_id, tf, lo, hi)
+            dropped += d
+            requests += r
+            if not df.empty:
+                stored = store.merge_save(inst_id, tf, df)
+                n_fetched += len(df)
+            log.info("fetched chunk", extra={"inst_id": inst_id, "tf": tf.value, "start": lo, "end": hi, "rows": len(df)})
+            if df.empty and r > 0 and lo > a:
+                break  # the exchange has nothing older than this: stop walking back
+            hi = lo
 
-    fetched = pd.concat(fetched_frames, ignore_index=True) if fetched_frames else pd.DataFrame()
-    stored = store.merge_save(inst_id, tf, fetched) if not fetched.empty else existing
     window = stored[(stored["ts"] >= start_ts) & (stored["ts"] < end_ts)]
     return CollectResult(
         inst_id=inst_id,
         timeframe=tf.value,
-        fetched=len(fetched),
+        fetched=n_fetched,
         dropped_unconfirmed=dropped,
         requests=requests,
         stored_rows=len(stored),

@@ -6,6 +6,7 @@ import {
   type Dataset,
   type RiskConfig,
   type RunDetail,
+  type ResearchSplit,
   type RunSummary,
   type StrategyInfo,
   type SystemInfo,
@@ -41,6 +42,10 @@ export function BacktestLab({ system, preset, onInspectTrade }: {
   // form state
   const [strategyKey, setStrategyKey] = useState("");
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [split, setSplit] = useState<ResearchSplit | null>(null);
+  useEffect(() => {
+    api.split().then(setSplit).catch(() => setSplit(null));
+  }, []);
   const [tf, setTf] = useState("15m");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
@@ -81,12 +86,16 @@ export function BacktestLab({ system, preset, onInspectTrade }: {
   const dataset = datasets.find((d) => d.inst_id === INST && d.timeframe === tf);
 
   // Default the period to the whole stored dataset for the chosen timeframe.
+  // The out-of-sample window is sealed: default to the already-observed window (or the stored
+  // range when no split is defined). The backend refuses sealed periods whatever the UI sends.
   useEffect(() => {
     if (dataset?.first_ts != null && dataset.last_ts != null) {
-      setStart(fmtDate(dataset.first_ts));
+      const observed = split?.observed?.start_ts;
+      const from = observed != null && split?.oos_sealed ? Math.max(dataset.first_ts, observed + 30 * DAY_MS) : dataset.first_ts;
+      setStart(fmtDate(Math.min(from, dataset.last_ts)));
       setEnd(fmtDate(dataset.last_ts + TF_MS[tf]));
     }
-  }, [dataset?.first_ts, dataset?.last_ts, tf]);
+  }, [dataset?.first_ts, dataset?.last_ts, tf, split]);
 
   const versions = useMemo(
     () => strategies.flatMap((s) => s.versions.map((v) => ({ key: `${v.strategy_id}:${v.version}`, v }))),
@@ -279,6 +288,17 @@ export function BacktestLab({ system, preset, onInspectTrade }: {
               {selectedVersion.description} · params <span className="mono">#{selectedVersion.params_hash.slice(0, 10)}</span>
             </p>
           )}
+          {split?.defined && split.is && split.oos && split.observed && (
+            <div className="split-info">
+              <span className="tag">IS {split.is.start} → {split.is.end_exclusive}</span>
+              <span className={`tag ${split.oos_sealed ? "warn" : ""}`}>
+                OOS {split.oos.start} → {split.oos.end_exclusive} {split.oos_sealed ? "· SEALED" : "· UNSEALED"}
+              </span>
+              <span className="tag">observed from {split.observed.start}</span>
+              <button onClick={() => { setStart(split.is!.start); setEnd(split.is!.end_exclusive); }}>Use IS window</button>
+              <span className="fine">End is exclusive. Periods overlapping a sealed OOS window are refused.</span>
+            </div>
+          )}
           <button className="primary" onClick={runBacktest} disabled={!!busy || !dataset || !start || !end}>
             Run backtest
           </button>
@@ -312,7 +332,8 @@ export function BacktestLab({ system, preset, onInspectTrade }: {
             <div className="provenance mono">
               run {run.run_id} · code {run.code_revision} · engine {run.engine_version} · params #
               {run.params_hash.slice(0, 10)} · data #{run.data_fingerprint.slice(0, 10)} · capital{" "}
-              {fmtNum(run.config.initial_capital, 0)} · fee {run.config.costs.taker_fee_rate} · slip{" "}
+              {fmtNum(run.config.initial_capital, 0)} · segment {run.segment ?? "—"}
+              {run.oos_unsealed_run ? " · OOS UNSEALED RUN" : ""} · fee {run.config.costs.taker_fee_rate} · slip{" "}
               {run.config.costs.slippage_bps}bps · risk {run.config.risk.risk_per_trade_pct}%
             </div>
             {run.notes.length > 0 && (

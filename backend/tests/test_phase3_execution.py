@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
-
 import synth
 from conftest import TF, make_bars, zero_cost_config
+from fastapi.testclient import TestClient
+
 from tradingos.api.app import create_app
 from tradingos.backtest.engine import run_backtest
 from tradingos.backtest.models import BacktestConfig, CostModel, ExecutionModel
@@ -19,7 +19,13 @@ from tradingos.domain.timeframes import Timeframe
 from tradingos.marketdata.quality import apply_quality_rules, zero_volume_runs
 from tradingos.marketdata.store import CandleStore
 from tradingos.research.split import OosSealedError, load_split
-from tradingos.risk.engine import ExecutionCosts, RiskConfig, RiskEngine, net_reward_risk, unit_loss_at_stop
+from tradingos.risk.engine import (
+    ExecutionCosts,
+    RiskConfig,
+    RiskEngine,
+    net_reward_risk,
+    unit_loss_at_stop,
+)
 from tradingos.services.backtest_service import BacktestInputError, run_and_store
 from tradingos.storage.runs import RunRepository
 from tradingos.strategy.base import empty_signals

@@ -18,8 +18,8 @@ import numpy as np
 from tradingos.config import Settings
 from tradingos.domain.timeframes import Timeframe
 from tradingos.marketdata.store import data_fingerprint
-from tradingos.services.data_access import PeriodNotAllowedError, load_strategy_bars
 from tradingos.services.backtest_service import BacktestInputError
+from tradingos.services.data_access import PeriodNotAllowedError, load_strategy_bars
 from tradingos.strategy.configs import ConfigIntegrityError, ConfigStore
 from tradingos.strategy.inspect import audit_evidence
 from tradingos.strategy.instances import check_data_requirements
@@ -105,8 +105,13 @@ def audit_run(settings: Settings, run: dict[str, Any]) -> dict[str, Any]:
 
     trades = []
     for t in run["trades"]:
-        # the signal bar is the last stored bar that closed at or before the fill bar's open
-        i = int(np.searchsorted(ts, t["entry_ts"], side="left")) - 1
+        # Signal bar: recorded on the trade since engine 0.3.0 (a limit order fills several bars
+        # after its signal). Older records: the last stored bar before the fill bar.
+        if t.get("signal_ts") is not None:
+            k = int(np.searchsorted(ts, t["signal_ts"], side="left"))
+            i = k if k < len(ts) and ts[k] == t["signal_ts"] else -1
+        else:
+            i = int(np.searchsorted(ts, t["entry_ts"], side="left")) - 1
         row = signals.iloc[i] if i >= 0 else None
         signal_ok = row is not None and int(row["entry"]) == t["side"] and bool(np.isclose(row["stop"], t["stop"]))
         prefix_ok = None
@@ -130,6 +135,8 @@ def audit_run(settings: Settings, run: dict[str, Any]) -> dict[str, Any]:
             "planned_rr_at_fill": _planned_rr(t["side"], t["entry_price"], t["stop"], target),
             "signal_reproduced": bool(signal_ok),
             "prefix_replay_ok": prefix_ok,
+            "entry_type": t.get("entry_type", "market"),
+            "bars_from_signal_to_fill": (int(np.searchsorted(ts, t["entry_ts"], side="left")) - i) if i >= 0 else None,
             "evidence": evidence,
             "evidence_ok": all(e["ok"] for e in evidence) if evidence else None,
             "candidate": {k: cand[k] for k in ("id", "label", "ts", "known_ts", "info", "stages")} if cand else None,

@@ -13,10 +13,10 @@ from tradingos.backtest.models import ENGINE_VERSION, BacktestConfig
 from tradingos.config import BACKEND_DIR, ExecutionEnvironment, Settings, assert_environment_allowed
 from tradingos.domain.instruments import KNOWN_INSTRUMENTS
 from tradingos.domain.timeframes import Timeframe
-from tradingos.marketdata.store import CandleStore, data_fingerprint
+from tradingos.marketdata.store import data_fingerprint
 from tradingos.marketdata.validation import validate_candles
-from tradingos.storage.runs import RunRepository
 from tradingos.services.data_access import PeriodNotAllowedError, load_strategy_bars
+from tradingos.storage.runs import RunRepository
 from tradingos.strategy.configs import ConfigIntegrityError, ConfigStore
 from tradingos.strategy.instances import check_data_requirements
 from tradingos.strategy.registry import build_strategy

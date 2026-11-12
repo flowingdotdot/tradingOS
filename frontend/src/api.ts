@@ -439,6 +439,10 @@ export interface RunDetail extends RunSummary {
     components: Record<string, boolean>;
   };
   inspection?: Inspection | null;
+  segment?: string;
+  oos_unsealed_run?: boolean;
+  research_split?: ResearchSplit | null;
+  execution_model?: Record<string, unknown>;
   conditions?: {
     inst_id: string;
     timeframe: string;
@@ -473,6 +477,16 @@ export interface Candles {
   low: number[];
   close: number[];
   volume: number[];
+}
+
+export interface ResearchSplit {
+  defined: boolean;
+  name?: string;
+  fingerprint?: string;
+  oos_sealed?: boolean;
+  is?: { start_ts: number; end_ts: number; start: string; end_exclusive: string };
+  oos?: { start_ts: number; end_ts: number; start: string; end_exclusive: string };
+  observed?: { start_ts: number; start: string };
 }
 
 export interface BacktestRequest {
@@ -527,6 +541,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ inst_id, timeframe, days }),
     }),
+  split: () => request<ResearchSplit>("/api/research/split"),
   strategies: () => request<StrategyInfo[]>("/api/strategies"),
   strategy: (id: string) => request<StrategyInfo>(`/api/strategies/${id}`),
   validate: (id: string, params: Record<string, unknown>) =>

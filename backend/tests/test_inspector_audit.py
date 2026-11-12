@@ -285,3 +285,28 @@ def test_mtf_consistency_detects_a_mismatch(tmp_path):
     r = check_mtf_consistency(store, "X", M5, M15)
     assert r["consistent"] is False and r["max_abs_price_diff"] == pytest.approx(5)
     assert check_mtf_consistency(store, "X", M5, H4)["compared"] == 0
+
+
+def test_audit_uses_the_recorded_signal_bar_for_limit_orders(tmp_path):
+    """A limit order fills bars after its signal; the audit must check the SIGNAL bar, not fill-1."""
+    import yaml
+
+    cfg_dir = tmp_path / "strategies" / "ict_bearish_ote"
+    cfg_dir.mkdir(parents=True)
+    raw = yaml.safe_load((BACKEND_DIR / "config/strategies/ict_bearish_ote/v1-fvg-retest.yaml").read_text("utf-8"))
+    raw["version"], raw["params"]["bias"] = "retest-nobias", {"enabled": False}
+    (cfg_dir / "t.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+    # TARGET_PASSED scenario + a bounce back up through the 5m FVG so that the limit really fills late
+    bars = synth.bearish_ote_scenario(synth.GOOD_RETRACE[:-1] + [(103, 1), (110, 1.5), (100, 2)])
+    CandleStore(tmp_path / "market").merge_save("BTC-USDT-SWAP", M5, bars)
+    settings = Settings(data_dir=tmp_path, strategy_config_dir=tmp_path / "strategies")
+    tc = TestClient(create_app(settings))
+    run = tc.post("/api/backtests", json={"strategy_id": "ict_bearish_ote", "strategy_version": "retest-nobias",
+                                          "timeframe": "5m", "require_full_warmup": False,
+                                          "start_ts": int(bars["ts"].iloc[0]),
+                                          "end_ts": int(bars["ts"].iloc[-1]) + M5.ms}).json()
+    assert len(run["trades"]) == 1 and run["trades"][0]["entry_type"] == "limit"
+    t = tc.get(f"/api/backtests/{run['run_id']}/audit").json()["trades"][0]
+    assert t["bars_from_signal_to_fill"] > 1                          # filled later than the next bar
+    assert t["signal_reproduced"] and t["prefix_replay_ok"] and t["evidence_ok"]
+    assert t["decision_ts"] == t["signal_bar_ts"] + M5.ms < t["entry_ts"]

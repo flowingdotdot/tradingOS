@@ -204,3 +204,5 @@ table.matrix th { font-size: 10.5px; }
 .cand-detail td { white-space: normal; }
 tr.detail-row td { background: var(--panel-2); white-space: normal; }
 tr.detail-row { cursor: default; }
+
+.split-info { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 6px 0 10px; }

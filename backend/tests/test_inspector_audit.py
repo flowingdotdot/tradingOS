@@ -208,7 +208,7 @@ def test_inspect_endpoint_and_run_record(api):
     assert saved.status_code == 200
     run = api.post("/api/backtests", json={"strategy_id": "ict_bearish_ote", "strategy_version": "t-nobias",
                                            "timeframe": "5m", "require_full_warmup": False, **api.span}).json()
-    assert run["engine_version"] == "0.2.0"
+    assert run["engine_version"] == "0.3.0"
     assert run["inspection"]["n_signals"] == 1 and len(run["trades"]) == 1
     stored = api.get(f"/api/backtests/{run['run_id']}").json()
     assert stored["inspection"]["funnel"] == run["inspection"]["funnel"]          # recorded with the run

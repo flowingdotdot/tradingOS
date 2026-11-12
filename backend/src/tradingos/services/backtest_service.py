@@ -16,7 +16,7 @@ from tradingos.domain.timeframes import Timeframe
 from tradingos.marketdata.store import CandleStore, data_fingerprint
 from tradingos.marketdata.validation import validate_candles
 from tradingos.storage.runs import RunRepository
-from tradingos.strategy.base import has_limit_entries
+from tradingos.services.data_access import PeriodNotAllowedError, load_strategy_bars
 from tradingos.strategy.configs import ConfigIntegrityError, ConfigStore
 from tradingos.strategy.instances import check_data_requirements
 from tradingos.strategy.registry import build_strategy
@@ -46,6 +46,20 @@ def code_revision() -> str:
         return "unknown"
 
 
+MAX_EQUITY_POINTS = 20_000
+
+
+def _equity_for_storage(eq) -> dict[str, Any]:
+    """Metrics are computed on the full curve; long curves are thinned for storage/display only."""
+    step = max(1, -(-len(eq) // MAX_EQUITY_POINTS))
+    if step > 1:
+        idx = sorted(set(range(0, len(eq), step)) | {len(eq) - 1})
+        eq = eq.iloc[idx]
+    out = eq.assign(in_position=eq["in_position"].astype(int)).to_dict("list")
+    out["downsample_step"] = step
+    return out
+
+
 def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepository,
                   configs: ConfigStore | None = None) -> dict[str, Any]:
     """One engine for every strategy: the plugin only supplies signals."""
@@ -63,12 +77,15 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
     if req_errors:
         raise BacktestInputError("; ".join(req_errors))
 
-    store = CandleStore(settings.market_data_dir)
     strategy = build_strategy(version.strategy_id, version.params)
     # Load extra history before start_ts so indicators are warmed up; trading is only
-    # allowed from start_ts onwards (signals before it are discarded).
-    warm_start = config.start_ts - strategy.warmup_bars() * tf.ms
-    bars = store.load(config.inst_id, tf, warm_start, config.end_ts)
+    # allowed from start_ts onwards (signals before it are discarded). The loader enforces
+    # the OOS seal and applies the data-quality rules.
+    try:
+        bars, data_ctx = load_strategy_bars(settings, config.inst_id, tf, config.start_ts, config.end_ts,
+                                            strategy.warmup_bars(), "backtest")
+    except PeriodNotAllowedError as exc:
+        raise BacktestInputError(str(exc)) from exc
     if bars.empty:
         raise BacktestInputError("no stored candles for this instrument/timeframe/period — collect data first")
     test_mask = (bars["ts"] >= config.start_ts).to_numpy()
@@ -100,12 +117,13 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
         )
     if quality.gaps:
         notes.append(f"Data has {len(quality.gaps)} gap(s), {quality.missing_bars} missing bar(s). Not filled.")
+    dq = data_ctx["quality"]
+    if dq.get("bars_removed"):
+        notes.append(f"{len(dq['invalid_runs'])} zero-volume run(s) ({dq['bars_removed']} bars) treated as missing.")
+    if dq.get("flagged_short_bars"):
+        notes.append(f"{dq['flagged_short_bars']} zero-volume bar(s) in short runs kept but flagged.")
+    notes.append("Funding is an ASSUMED fixed rate, not measured data (OKX serves ~3 months of history).")
 
-    if has_limit_entries(signals_t):
-        raise BacktestInputError(
-            "this strategy version emits LIMIT entries (e.g. fvg_retest); the backtest engine supports "
-            "market entries only until Phase 3. Use it in Strategy Lab for research."
-        )
     result = run_backtest(bars_t, signals_t, config, instrument)
     metrics = compute_metrics(result)
     notes += result.notes
@@ -144,10 +162,30 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
             "resolved_params": version.params,
             "components": strategy.component_states(),
         },
+        "segment": data_ctx["segment"],
+        "research_split": data_ctx["research_split"],
+        "oos_unsealed_run": data_ctx["oos_unsealed_run"],
+        "execution_model": {
+            "engine_version": ENGINE_VERSION,
+            "market_entry": "next bar open +/- adverse slippage; rejected across data gaps",
+            "stop_target": "stop assumed first when stop and target are inside one candle; gap through stop fills at the open",
+            "sizing": "cost-inclusive (stop loss + entry fee + exit fee + stop slippage)" if config.execution.cost_inclusive_sizing else "stop distance only (legacy)",
+            "min_rr_check": "net reward/risk at the expected fill" if config.execution.enforce_net_rr_at_fill else "signal bar close only (legacy)",
+            "limit_orders": f"fill only if price trades through the limit by {config.execution.limit_fill_penetration_bps} bps; "
+                            "fill at the limit; fill-bar stop assumed, fill-bar target not credited; "
+                            "cancelled on expiry, data gap or target reached while unfilled",
+            "limit_entry_fee": config.execution.limit_entry_fee,
+            "funding": {"mode": config.costs.funding_mode, "rate_per_8h": config.costs.funding_rate_per_8h,
+                        "basis": "ASSUMED fixed rate — not measured data"},
+            "not_modelled": ["margin / liquidation", "partial fills", "intra-bar price path", "tick rounding",
+                             "historical funding rates"],
+            "limit_orders_placed": result.limit_orders_placed, "limit_orders_filled": result.limit_orders_filled,
+        },
+        "data_quality_rules": dq,
         "conditions": {
             "inst_id": config.inst_id, "timeframe": tf.value, "start_ts": config.start_ts, "end_ts": config.end_ts,
             "initial_capital": config.initial_capital, "costs": config.costs.model_dump(),
-            "risk": config.risk.model_dump(),
+            "risk": config.risk.model_dump(), "execution": config.execution.model_dump(),
             # test-window data (what results are compared on) vs. full input incl. strategy warm-up
             "data_fingerprint": data_fingerprint(bars_t),
             "input_fingerprint": data_fingerprint(bars),
@@ -156,7 +194,7 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
         "metrics": metrics,
         "trades": [t.model_dump() for t in result.trades],
         "rejections": [r.model_dump() for r in result.rejections],
-        "equity": result.equity.assign(in_position=result.equity["in_position"].astype(int)).to_dict("list"),
+        "equity": _equity_for_storage(result.equity),
         "inspection": (inspection.summarize(config.start_ts, config.end_ts, compact=True)
                        if inspection is not None else None),
         "data_quality": quality.to_dict(),

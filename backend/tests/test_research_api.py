@@ -94,12 +94,12 @@ def test_backtest_api_enforces_data_requirements(client):
     assert run["conditions"]["costs"]["taker_fee_rate"] == 0.0005
 
 
-def test_limit_entry_variant_is_refused_by_the_backtest_service(tmp_path):
+def test_limit_entry_variant_runs_on_the_common_engine(tmp_path):
     cfg_dir = tmp_path / "strategies" / "ict_bearish_ote"
     cfg_dir.mkdir(parents=True)
     raw = yaml.safe_load((BACKEND_DIR / "config/strategies/ict_bearish_ote/v1-fvg-retest.yaml").read_text("utf-8"))
     raw["version"] = "test-retest-nobias"
-    raw["params"]["bias"]["enabled"] = False      # so the synthetic scenario really emits a limit signal
+    raw["params"]["bias"] = {"enabled": False}    # so the synthetic scenario really emits a limit signal
     (cfg_dir / "test.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
     shutil.copytree(BACKEND_DIR / "config/strategies/ema_cross", tmp_path / "strategies" / "ema_cross")
     bars = synth.bearish_ote_scenario()
@@ -108,4 +108,7 @@ def test_limit_entry_variant_is_refused_by_the_backtest_service(tmp_path):
     r = tc.post("/api/backtests", json={"strategy_id": "ict_bearish_ote", "strategy_version": "test-retest-nobias",
                                         "timeframe": "5m", "start_ts": int(bars["ts"].iloc[0]),
                                         "end_ts": int(bars["ts"].iloc[-1]) + M5.ms, "require_full_warmup": False})
-    assert r.status_code == 400 and "LIMIT entries" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+    run = r.json()
+    assert run["execution_model"]["limit_orders_placed"] == 1 and run["segment"] == "IS"
+    assert "trades through the limit" in run["execution_model"]["limit_orders"]

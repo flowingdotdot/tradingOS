@@ -26,6 +26,7 @@ from tradingos.marketdata.validation import validate_candles
 from tradingos.risk.engine import RiskConfig
 from tradingos.services.audit_service import audit_run, inspect_signals
 from tradingos.services.backtest_service import BacktestInputError, run_and_store
+from tradingos.services.data_access import research_split
 from tradingos.services.research_service import analyze_for_chart
 from tradingos.storage.runs import RunRepository
 from tradingos.strategy.configs import ConfigExistsError, ConfigIntegrityError, ConfigStore
@@ -107,6 +108,12 @@ def create_app(
             },
             "defaults": {"costs": CostModel().model_dump(), "risk": RiskConfig().model_dump()},
         }
+
+    @app.get("/api/research/split")
+    def get_research_split() -> dict:
+        """IS / OOS / observed boundaries and whether the OOS window is sealed (read only)."""
+        split = research_split(settings)
+        return {"defined": split is not None, **(split.public() if split is not None else {})}
 
     # ------------------------------------------------------------ market data
     @app.get("/api/market/datasets")

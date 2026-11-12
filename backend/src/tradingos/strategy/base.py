@@ -35,7 +35,9 @@ from tradingos.strategy.view import ResearchView, add_signal_layers
 SIGNAL_COLUMNS = ["entry", "stop", "target", "exit_long", "exit_short", "reason"]
 # Optional order details. NaN limit_price = market order at the next open (Phase-1 engine).
 # A finite limit_price requests a limit entry, which the engine supports from Phase 3.
-OPTIONAL_SIGNAL_COLUMNS = ["limit_price", "limit_expiry_bars"]
+#   min_rr: the engine re-checks reward/risk at the EXPECTED FILL, net of expected costs, and
+#   rejects the entry if it is below this value (NaN = no check).
+OPTIONAL_SIGNAL_COLUMNS = ["limit_price", "limit_expiry_bars", "min_rr"]
 
 
 def empty_signals(index: pd.Index) -> pd.DataFrame:
@@ -50,6 +52,7 @@ def empty_signals(index: pd.Index) -> pd.DataFrame:
             "reason": np.full(n, "", dtype=object),
             "limit_price": np.full(n, np.nan),
             "limit_expiry_bars": np.full(n, np.nan),
+            "min_rr": np.full(n, np.nan),
         },
         index=index,
     )

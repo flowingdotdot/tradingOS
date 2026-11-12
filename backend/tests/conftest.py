@@ -8,7 +8,7 @@ from tradingos.backtest.models import BacktestConfig, CostModel
 from tradingos.domain.timeframes import Timeframe
 from tradingos.risk.engine import RiskConfig
 
-T0 = 1_735_689_600_000  # 2025-01-01T00:00:00Z
+T0 = 1_672_531_200_000  # 2023-01-01T00:00:00Z
 TF = Timeframe.M15
 
 

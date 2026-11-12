@@ -11,7 +11,7 @@ import pandas as pd
 
 from tradingos.domain.timeframes import Timeframe
 
-T0 = 1_735_689_600_000  # 2025-01-01 00:00 UTC (aligned to 4H/15m/5m)
+T0 = 1_672_531_200_000  # 2023-01-01 00:00 UTC (aligned to 4H/15m/5m)
 COLS = ["ts", "open", "high", "low", "close", "volume", "volume_ccy", "volume_quote"]
 
 

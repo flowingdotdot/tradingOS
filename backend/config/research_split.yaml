@@ -1,0 +1,12 @@
+# Research split for BTC-USDT-SWAP — approved 2026-11-12. All dates UTC, windows are [start, end).
+# Changing this file is a recorded research decision (git history). While oos_sealed is true every
+# strategy evaluation that overlaps the OOS window is refused (API, CLI, UI, inspector, backtests).
+name: btc-usdt-swap-2026-11
+is_start: "2020-01-01"      # in-sample: implementation checks, frequency, definition comparison
+is_end: "2024-10-01"
+oos_start: "2024-10-01"     # out-of-sample: run ONCE after definition and criteria are fixed
+oos_end: "2026-05-14"       # from here on: already observed during Phase 1-2.5 (not independent)
+oos_sealed: true
+# A run of zero-volume bars this long is treated as missing data (exchange outage filler).
+zero_volume_invalid_minutes: 30
+notes: "2019-12-16..2019-12-31 is warm-up only (listing period). Funding before 2026-08-10 is assumed, not measured."

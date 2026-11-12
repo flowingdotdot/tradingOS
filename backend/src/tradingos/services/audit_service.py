@@ -17,7 +17,8 @@ import numpy as np
 
 from tradingos.config import Settings
 from tradingos.domain.timeframes import Timeframe
-from tradingos.marketdata.store import CandleStore, data_fingerprint
+from tradingos.marketdata.store import data_fingerprint
+from tradingos.services.data_access import PeriodNotAllowedError, load_strategy_bars
 from tradingos.services.backtest_service import BacktestInputError
 from tradingos.strategy.configs import ConfigIntegrityError, ConfigStore
 from tradingos.strategy.inspect import audit_evidence
@@ -46,7 +47,11 @@ def inspect_signals(settings: Settings, configs: ConfigStore, strategy_id: str, 
     if errors:
         raise BacktestInputError("; ".join(errors))
     strategy = cls(cfg.params)
-    bars = CandleStore(settings.market_data_dir).load(inst_id, tf, start_ts - strategy.warmup_bars() * tf.ms, end_ts)
+    try:
+        bars, data_ctx = load_strategy_bars(settings, inst_id, tf, start_ts, end_ts, strategy.warmup_bars(),
+                                            "signal inspection")
+    except PeriodNotAllowedError as exc:
+        raise BacktestInputError(str(exc)) from exc
     if bars.empty:
         raise BacktestInputError(f"no stored {tf.value} candles for {inst_id} — collect data first")
     _, insp = strategy.evaluate(bars)
@@ -58,6 +63,7 @@ def inspect_signals(settings: Settings, configs: ConfigStore, strategy_id: str, 
         "data_first_ts": int(bars["ts"].iloc[0]), "data_last_ts": int(bars["ts"].iloc[-1]),
         "warmup_bars": strategy.warmup_bars(),
         "warmup_available_bars": int((bars["ts"] < start_ts).sum()),
+        "segment": data_ctx["segment"], "data_quality_rules": data_ctx["quality"],
     }
     if insp is None:
         return {**base, "supported": False, "inspection": None}
@@ -82,9 +88,12 @@ def audit_run(settings: Settings, run: dict[str, Any]) -> dict[str, Any]:
     strategy = cls(params)
     tf = Timeframe(run["timeframe"])
     cfg = run["config"]
-    bars = CandleStore(settings.market_data_dir).load(
-        run["inst_id"], tf, cfg["start_ts"] - strategy.warmup_bars() * tf.ms, cfg["end_ts"]
-    ).reset_index(drop=True)
+    try:
+        bars, _ = load_strategy_bars(settings, run["inst_id"], tf, cfg["start_ts"], cfg["end_ts"],
+                                     strategy.warmup_bars(), "trade audit")
+    except PeriodNotAllowedError as exc:
+        raise BacktestInputError(str(exc)) from exc
+    bars = bars.reset_index(drop=True)
     if bars.empty:
         raise BacktestInputError("the run's market data is no longer stored")
     recorded_fp = (run.get("conditions") or {}).get("input_fingerprint") or run.get("data_fingerprint")

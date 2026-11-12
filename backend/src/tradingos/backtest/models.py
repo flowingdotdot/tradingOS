@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from tradingos.risk.engine import RiskConfig
 
-ENGINE_VERSION = "0.2.0"
+ENGINE_VERSION = "0.3.0"
 
 
 class CostModel(BaseModel):
@@ -19,9 +21,23 @@ class CostModel(BaseModel):
     # guaranteed; default charges taker on every fill (conservative).
     target_fill_as_maker: bool = False
     slippage_bps: float = Field(2.0, ge=0, le=500)  # adverse, applied to market-type fills
-    # Charged as a COST regardless of position side (conservative; real funding can be
-    # received). Historical funding rates are Phase 3.
-    funding_rate_per_8h: float = Field(0.0001, ge=0, le=0.01)
+    # ASSUMPTION, not measured data: OKX only serves ~3 months of funding history.
+    #   cost   : |rate| charged on every funding time regardless of side (conservative default)
+    #   signed : rate > 0 means longs pay and shorts RECEIVE (rate may be negative)
+    funding_rate_per_8h: float = Field(0.0001, ge=-0.01, le=0.01)
+    funding_mode: Literal["cost", "signed"] = "cost"
+
+
+class ExecutionModel(BaseModel):
+    """Execution-model switches. Defaults are the approved Phase-3 rules; the flags exist so
+    that the effect of each rule can be measured (before/after) and are recorded with every run."""
+
+    cost_inclusive_sizing: bool = True      # risk budget covers stop loss + fees + stop slippage
+    enforce_net_rr_at_fill: bool = True     # re-check the signal's min_rr at the expected fill, net of costs
+    # A limit order is filled only if price trades THROUGH the limit by at least this much.
+    # 0 = "touch is a fill" (optimistic: a touch does not guarantee queue priority).
+    limit_fill_penetration_bps: float = Field(1.0, ge=0, le=100)
+    limit_entry_fee: Literal["taker", "maker"] = "taker"   # taker = conservative
 
 
 class BacktestConfig(BaseModel):
@@ -37,6 +53,7 @@ class BacktestConfig(BaseModel):
     require_full_warmup: bool = True
     costs: CostModel = CostModel()
     risk: RiskConfig = RiskConfig()
+    execution: ExecutionModel = ExecutionModel()
 
 
 class Trade(BaseModel):
@@ -50,13 +67,13 @@ class Trade(BaseModel):
     contracts: float
     stop: float
     target: float | None
-    risk_amount: float        # planned loss at stop (before costs)
+    risk_amount: float        # price risk at the stop (qty * |entry - stop|)
     gross_pnl: float
     fees: float
     funding: float
     slippage_cost: float      # vs reference price (already inside gross_pnl)
     net_pnl: float
-    r_multiple: float         # net_pnl / risk_amount
+    r_multiple: float         # net_pnl / risk_budget
     exit_reason: str          # stop | target | signal_exit | end_of_data
     entry_reason: str
     bars_held: int
@@ -64,9 +81,16 @@ class Trade(BaseModel):
     mae: float                # max adverse excursion, price units
     mfe: float                # max favourable excursion, price units
     capped_by_leverage: bool
+    # --- engine 0.3.0
+    entry_type: str = "market"          # market | limit
+    signal_ts: int | None = None        # open time of the bar whose close produced the signal
+    risk_budget: float = 0.0            # planned loss at the stop incl. expected fees + slippage
+    planned_net_rr: float | None = None  # net reward/risk at the expected fill (None = no target)
+    fill_bar_ambiguous: bool = False    # limit fill and stop/target inside the same candle
 
 
 class Rejection(BaseModel):
     ts: int
     side: int
     reason: str
+    detail: str = ""

@@ -2,6 +2,10 @@
 
 Every new entry goes through `authorize_entry`. Any failed rule rejects the entry
 and returns a machine-readable reason. See docs/RISK_POLICY.md §1-2.
+
+Cost-inclusive sizing (engine 0.3.0): the risk budget covers the loss at the stop INCLUDING
+the expected entry fee, exit fee and exit slippage, so a clean stop-out costs about the budget
+(not budget + costs). Funding and gaps through the stop are not predictable and are excluded.
 """
 
 from __future__ import annotations
@@ -23,12 +27,45 @@ class RiskConfig(BaseModel):
 
 
 @dataclass(frozen=True)
+class ExecutionCosts:
+    """Expected costs of one round trip, as fractions of price."""
+
+    entry_fee_rate: float = 0.0
+    exit_fee_rate: float = 0.0       # fee on a stop-out (market order)
+    exit_slippage: float = 0.0       # adverse slippage on a stop-out
+    target_fee_rate: float = 0.0     # fee on a take-profit fill
+
+
+def unit_loss_at_stop(side: int, entry: float, stop: float, costs: ExecutionCosts | None) -> tuple[float, float]:
+    """(price loss, costs) per unit of base currency if the stop is hit, entry already at its fill price."""
+    if costs is None:
+        return (entry - stop) * side, 0.0
+    stop_fill = stop * (1 - costs.exit_slippage * side)       # long sells lower, short buys higher
+    price_loss = (entry - stop_fill) * side
+    fees = entry * costs.entry_fee_rate + stop_fill * costs.exit_fee_rate
+    return price_loss, fees
+
+
+def net_reward_risk(side: int, entry: float, stop: float, target: float, costs: ExecutionCosts | None) -> float | None:
+    """Reward/risk at the expected fill, net of expected fees and stop slippage.
+    reward = move to target - entry fee - target fee;  risk = loss at stop incl. fees and slippage."""
+    price_loss, fees = unit_loss_at_stop(side, entry, stop, costs)
+    loss = price_loss + fees
+    if not loss > 0:
+        return None
+    c = costs or ExecutionCosts()
+    reward = (target - entry) * side - entry * c.entry_fee_rate - target * c.target_fee_rate
+    return reward / loss
+
+
+@dataclass(frozen=True)
 class EntryDecision:
     approved: bool
     reason: str
-    qty: float = 0.0          # base currency (e.g. BTC)
+    qty: float = 0.0            # base currency (e.g. BTC)
     notional: float = 0.0
-    risk_amount: float = 0.0  # qty * |entry - stop|
+    risk_amount: float = 0.0    # qty * |entry - stop|  (price risk only)
+    planned_loss: float = 0.0   # qty * (price loss + expected fees + stop slippage) = what the budget covers
     capped_by_leverage: bool = False
 
 
@@ -60,8 +97,10 @@ class RiskEngine:
 
     # ------------------------------------------------------------ authorize
     def authorize_entry(
-        self, *, side: int, entry_price: float, stop_price: float, equity: float, open_positions: int
+        self, *, side: int, entry_price: float, stop_price: float, equity: float, open_positions: int,
+        costs: ExecutionCosts | None = None,
     ) -> EntryDecision:
+        """costs=None -> legacy sizing on the stop distance only (engine <= 0.2.0)."""
         if open_positions >= self.config.max_open_positions:
             return EntryDecision(False, "max_open_positions")
         if self.daily_loss_limit_hit:
@@ -75,13 +114,15 @@ class RiskEngine:
             # long needs stop below entry; short needs stop above. Also catches gaps through the stop.
             return EntryDecision(False, "stop_on_wrong_side")
 
+        price_loss, fees = unit_loss_at_stop(side, entry_price, stop_price, costs)
+        per_unit = price_loss + fees
         risk_budget = equity * self.config.risk_per_trade_pct / 100
-        raw_qty = risk_budget / stop_dist
+        raw_qty = risk_budget / per_unit
         capped = False
         max_qty = equity * self.config.max_leverage / entry_price
         if raw_qty > max_qty:
             raw_qty, capped = max_qty, True
-        qty = self.instrument.floor_base_qty(raw_qty)
+        qty = self.instrument.floor_base_qty(raw_qty)          # never round up: risk must not grow
         if qty < self.instrument.min_base_qty - 1e-12:
             return EntryDecision(False, "below_min_size")
         return EntryDecision(
@@ -90,5 +131,6 @@ class RiskEngine:
             qty=qty,
             notional=qty * entry_price,
             risk_amount=qty * stop_dist,
+            planned_loss=qty * per_unit,
             capped_by_leverage=capped,
         )

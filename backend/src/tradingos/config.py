@@ -57,6 +57,8 @@ class Settings(BaseSettings):
 
     data_dir: Path = Field(default=PROJECT_DIR / "data")
     strategy_config_dir: Path = Field(default=BACKEND_DIR / "config" / "strategies")
+    # IS/OOS boundaries + OOS seal. A missing file means "no split defined" (nothing sealed).
+    research_split_file: Path | None = Field(default=BACKEND_DIR / "config" / "research_split.yaml")
     log_level: str = "INFO"
     log_json: bool = True
 

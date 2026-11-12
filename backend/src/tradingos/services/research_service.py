@@ -11,7 +11,8 @@ from typing import Any
 from tradingos.config import Settings
 from tradingos.domain.instruments import KNOWN_INSTRUMENTS
 from tradingos.domain.timeframes import Timeframe
-from tradingos.marketdata.store import CandleStore, data_fingerprint
+from tradingos.marketdata.store import data_fingerprint
+from tradingos.services.data_access import PeriodNotAllowedError, load_strategy_bars
 from tradingos.services.backtest_service import BacktestInputError, code_revision
 from tradingos.strategy.configs import ConfigIntegrityError, ConfigStore
 from tradingos.strategy.instances import check_data_requirements
@@ -45,8 +46,11 @@ def analyze_for_chart(settings: Settings, configs: ConfigStore, strategy_id: str
         raise BacktestInputError("; ".join(errors))
 
     strategy = cls(cfg.params)
-    warm = strategy.warmup_bars() * tf.ms
-    bars = CandleStore(settings.market_data_dir).load(inst_id, tf, start_ts - warm, end_ts)
+    try:
+        bars, data_ctx = load_strategy_bars(settings, inst_id, tf, start_ts, end_ts, strategy.warmup_bars(),
+                                            "research chart")
+    except PeriodNotAllowedError as exc:
+        raise BacktestInputError(str(exc)) from exc
     if bars.empty:
         raise BacktestInputError(f"no stored {tf.value} candles for {inst_id} — collect data first")
     view = strategy.research_view(bars, tf, start_ts, end_ts)
@@ -67,5 +71,7 @@ def analyze_for_chart(settings: Settings, configs: ConfigStore, strategy_id: str
         "start_ts": start_ts,
         "end_ts": end_ts,
         "warmup_from_ts": int(bars["ts"].iloc[0]),
+        "segment": data_ctx["segment"],
+        "data_quality_rules": data_ctx["quality"],
         "view": view.to_dict(),
     }

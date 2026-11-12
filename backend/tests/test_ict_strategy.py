@@ -99,15 +99,17 @@ def test_trigger_touch_variant_signals_at_the_touch_bar():
     assert s["trigger_ts"] == s["touched_ts"]
 
 
-def test_fvg_retest_variant_emits_limit_entry_which_phase1_engine_refuses():
+def test_fvg_retest_variant_emits_limit_entry_handled_by_the_engine():
     bars, strat, a = analyze(entry={"mode": "fvg_retest"})
     s = only_setup(a)
     assert s["status"] == "signal" and s["limit_price"] == pytest.approx(108.6)
     assert s["retest_outcome"]["outcome"] in ("would_fill", "expired_unfilled", "cancelled_target_first")
     sig = a.signals[a.signals["entry"] != 0]
-    assert sig["limit_price"].iloc[0] == pytest.approx(108.6)
-    with pytest.raises(NotImplementedError):
-        run_backtest(bars, a.signals, zero_cost_config(bars), BTC_USDT_SWAP)
+    assert sig["limit_price"].iloc[0] == pytest.approx(108.6) and sig["min_rr"].iloc[0] == 1.5
+    res = run_backtest(bars, a.signals, zero_cost_config(bars), BTC_USDT_SWAP)
+    # in this scenario price never trades back up through 108.6 -> the order expires unfilled
+    assert res.limit_orders_placed == 1 and res.limit_orders_filled == 0 and res.trades == []
+    assert [r.reason for r in res.rejections] in (["limit_expired"], [])   # [] if data ends first
 
 
 def test_component_toggles():

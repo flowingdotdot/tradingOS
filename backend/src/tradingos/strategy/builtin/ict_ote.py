@@ -201,7 +201,7 @@ class IctOteStrategy(Strategy):
     definition = StrategyDefinition(
         strategy_id="ict_bearish_ote",
         name="ICT Bearish OTE Continuation",
-        definition_version="1.0.0",
+        definition_version="1.1.0",   # 1.1.0: signals carry min_rr for the net-RR-at-fill check (which bars signal is unchanged)
         category="ict",
         maturity="research",
         description="4H bearish bias, 15m impulse with OTE/FVG entry zone, 5m MSS trigger, short toward the "
@@ -597,6 +597,7 @@ class IctOteStrategy(Strategy):
         sig.loc[j, "entry"] = -1
         sig.loc[j, "stop"] = stop
         sig.loc[j, "target"] = target
+        sig.loc[j, "min_rr"] = p.target.min_rr   # engine re-checks it at the expected fill, net of costs
         sig.loc[j, "reason"] = (
             f"setup#{s['id']} {s['break_kind']} impulse A={s['a']:.1f} B={s['b']:.1f}; "
             f"{'MSS' if p.entry.trigger == 'mss' else 'touch'} trigger; RR {rr:.2f}"

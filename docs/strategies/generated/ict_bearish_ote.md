@@ -3,7 +3,7 @@
 > AUTO-GENERATED from the plugin schema by `tradingos docs`. Do not edit by hand.
 
 - strategy_id: `ict_bearish_ote`
-- definition_version: `1.0.0`
+- definition_version: `1.1.0`
 - category: ict · maturity: **research**
 - run timeframes: 5m · derived internally: 15m, 4H
 - instruments: BTC-USDT-SWAP · fields: open, high, low, close

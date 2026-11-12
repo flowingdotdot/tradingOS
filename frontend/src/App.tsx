@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { api, type SystemInfo } from "./api";
 import { BacktestLab } from "./pages/BacktestLab";
+import { ChartWorkspace, type WorkspacePreset } from "./pages/ChartWorkspace";
 import { StrategyLab, type BacktestPreset, type LabPreset } from "./pages/StrategyLab";
 
-type PageId = "dashboard" | "strategy" | "backtest" | "desk" | "journal" | "intel" | "settings";
+type PageId = "chart" | "dashboard" | "strategy" | "backtest" | "desk" | "journal" | "intel" | "settings";
 
 const NAV: { id: PageId; label: string; phase?: string }[] = [
+  { id: "chart", label: "차트" },
   { id: "dashboard", label: "Dashboard" },
   { id: "strategy", label: "Strategy Lab" },
   { id: "backtest", label: "Backtest Lab" },
@@ -74,7 +76,8 @@ function Dashboard({ system }: { system: SystemInfo | null }) {
 }
 
 export default function App() {
-  const [page, setPage] = useState<PageId>("strategy");
+  const [page, setPage] = useState<PageId>("chart");
+  const [wsPreset, setWsPreset] = useState<WorkspacePreset | null>(null);
   const [preset, setPreset] = useState<BacktestPreset | null>(null);
   const [labPreset, setLabPreset] = useState<LabPreset | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
@@ -110,13 +113,17 @@ export default function App() {
             Cannot reach the backend. Start it with <span className="mono">tradingos serve</span> (port 8000).
           </div>
         )}
+        <div hidden={page !== "chart"}>
+          <ChartWorkspace preset={wsPreset} />
+        </div>
         {page === "dashboard" && <Dashboard system={system} />}
         {page === "strategy" && (
           <StrategyLab preset={labPreset} onBacktest={(p) => { setPreset(p); setPage("backtest"); }} />
         )}
         {page === "backtest" && (
           <BacktestLab system={system} preset={preset}
-            onInspectTrade={(p) => { setLabPreset({ ...p, nonce: Date.now() }); setPage("strategy"); }} />
+            onInspectTrade={(p) => { setLabPreset({ ...p, nonce: Date.now() }); setPage("strategy"); }}
+            onOpenTradeChart={(p) => { setWsPreset({ ...p, nonce: Date.now() }); setPage("chart"); }} />
         )}
         {PLACEHOLDER[page] && (
           <div className="page">

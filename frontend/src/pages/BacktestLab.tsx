@@ -25,10 +25,11 @@ import { DAY_MS, fmtDate, fmtNum, fmtTs } from "../format";
 const TF_MS: Record<string, number> = { "1m": 60e3, "5m": 300e3, "15m": 900e3, "1H": 3600e3, "4H": 14400e3 };
 const INST = "BTC-USDT-SWAP";
 
-export function BacktestLab({ system, preset, onInspectTrade }: {
+export function BacktestLab({ system, preset, onInspectTrade, onOpenTradeChart }: {
   system: SystemInfo | null;
   preset: BacktestPreset | null;
   onInspectTrade: (p: Omit<LabPreset, "nonce">) => void;
+  onOpenTradeChart: (p: { run_id: string; trade_id: number; strategy_id: string; version: string }) => void;
 }) {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -375,7 +376,14 @@ export function BacktestLab({ system, preset, onInspectTrade }: {
           <div className="grid-2">
             <section className="panel">
               <h2>Trades ({run.trades.length}) — click to inspect on chart</h2>
-              <TradeTable trades={run.trades} selected={focus?.trade_id ?? null} onSelect={setFocus} />
+              <p className="fine">
+                거래를 클릭하면 <b>차트</b> 화면으로 이동해 진입·손절·목표·청산을 전략 오버레이와 함께 보여줍니다
+                {run.timeframe !== "5m" ? " (이 실행은 5m 기준이 아니라 차트 화면에서는 캔들과 거래만 표시됩니다)" : ""}.
+              </p>
+              <TradeTable trades={run.trades} selected={focus?.trade_id ?? null} onSelect={(t) => {
+                setFocus(t);
+                onOpenTradeChart({ run_id: run.run_id, trade_id: t.trade_id, strategy_id: run.strategy_id, version: run.strategy_version });
+              }} />
             </section>
             <section className="panel">
               <h2>Monthly performance</h2>

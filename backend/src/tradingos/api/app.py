@@ -26,6 +26,7 @@ from tradingos.marketdata.validation import validate_candles
 from tradingos.risk.engine import RiskConfig
 from tradingos.services.audit_service import audit_run, inspect_signals
 from tradingos.services.backtest_service import BacktestInputError, run_and_store
+from tradingos.services.chart_service import allowed_segments, chart_window, run_trades
 from tradingos.services.data_access import research_split
 from tradingos.services.research_service import analyze_for_chart
 from tradingos.storage.runs import RunRepository
@@ -47,6 +48,15 @@ class ResearchRequest(BaseModel):
     timeframe: str | None = None
     start_ts: int
     end_ts: int
+
+
+class ChartRequest(BaseModel):
+    inst_id: str = "BTC-USDT-SWAP"
+    timeframe: str = "15m"
+    start_ts: int
+    end_ts: int
+    strategy_id: str | None = None
+    strategy_version: str | None = None
 
 
 class ValidateRequest(BaseModel):
@@ -131,6 +141,14 @@ def create_app(
         start_ts: int | None = None,
         end_ts: int | None = None,
     ) -> dict:
+        # Raw candles follow the same policy as every chart: nothing from the sealed OOS window.
+        split = research_split(settings)
+        if split is not None and split.oos_sealed:
+            lo = start_ts if start_ts is not None else 0
+            hi = end_ts if end_ts is not None else 1 << 62
+            if split.overlaps_oos(lo, hi):
+                raise HTTPException(400, "the requested candles overlap the SEALED out-of-sample window; "
+                                         "request the in-sample or the already-observed window explicitly")
         df = store.load(inst_id, timeframe, start_ts, end_ts)
         truncated = len(df) > MAX_CANDLES_RESPONSE
         if truncated:
@@ -217,6 +235,23 @@ def create_app(
         except (BacktestInputError, KeyError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.post("/api/chart/window")
+    def chart(req: ChartRequest) -> dict:
+        """One window of candles + the strategy's own overlay (Chart Workspace). OOS stays sealed."""
+        try:
+            return chart_window(settings, configs, req.inst_id, req.timeframe, req.start_ts, req.end_ts,
+                                req.strategy_id, req.strategy_version)
+        except ConfigValidationError as exc:
+            raise HTTPException(422, {"message": "invalid configuration", "errors": exc.errors}) from exc
+        except (BacktestInputError, KeyError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/chart/segments")
+    def chart_segments(inst_id: str = "BTC-USDT-SWAP") -> dict:
+        split = research_split(settings)
+        return {"segments": allowed_segments(settings, inst_id),
+                "split": split.public() if split is not None else None}
+
     @app.post("/api/research/inspect")
     def research_inspect(req: ResearchRequest) -> dict:
         """Signal Inspector: how every candidate signal was evaluated (funnel + per-condition)."""
@@ -286,6 +321,14 @@ def create_app(
         if run is None:
             raise HTTPException(404, "run not found")
         return run
+
+    @app.get("/api/backtests/{run_id}/trades")
+    def backtest_trades(run_id: str) -> dict:
+        """Trades only (chart navigation) — without the equity curve and inspection payload."""
+        run = repo.get(run_id)
+        if run is None:
+            raise HTTPException(404, "run not found")
+        return run_trades(run)
 
     @app.get("/api/backtests/{run_id}/audit")
     def audit_backtest(run_id: str) -> dict:

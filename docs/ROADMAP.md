@@ -97,3 +97,11 @@
 - [x] [ICT_FAILURE_ANALYSIS.md](ICT_FAILURE_ANALYSIS.md): MSS 확인 지연, 4H 바이어스, 임펄스/FVG, 구현 점검, 가설 3개
 - [x] 거래별 차트 [analysis/ict_v1_is_trades.html](analysis/ict_v1_is_trades.html), 실험 기록 [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md) + `experiment_id`, `tradingos trials`
 - [ ] **사용자 결정 대기**: 가설 H1~H3 중 무엇을 어떤 순서로 검증할지 (v1은 고정·보존, OOS 봉인 유지)
+
+## Chart-First 마일스톤 (2026-11-13) — 전략 실험 일시 중단
+- [x] 1~5단계: Chart Workspace (구간 단위 로딩, 5m/15m/4H, 십자선·OHLCV, 날짜 이동, 전체 화면), ICT 오버레이(HH/HL/LH/LL, BOS/MSS, FVG, OTE 가격, 4H 바이어스), 거래 클릭 이동·이전/다음·보유 시간
+- [x] OOS 보호: 차트·원시 캔들 요청 모두 공통 데이터 접근 정책 적용
+- [x] 오버레이 = 백테스트 신호 검증 (`scripts/chart_overlay_check.py`, 132/132)
+- [ ] **사용자 화면 확인 대기** ([UI_SMOKE_CHECKLIST.md](UI_SMOKE_CHECKLIST.md) 의 Chart Workspace 절)
+- [ ] 6~8단계: 레이어 고도화, 신호/거래 클릭 Inspector, Historical Replay — 화면 확인 후
+- 보류: ICT H1~H3 가설 검증, 파라미터 변경, OOS 실행, 새 전략

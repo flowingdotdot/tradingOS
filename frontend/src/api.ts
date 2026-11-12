@@ -136,6 +136,7 @@ export interface ValidationResult {
 interface ViewItemBase {
   layer: string;
   tf: string | null;
+  max_tf?: string | null; // hidden on charts coarser than this timeframe
   known_ts: number;
 }
 export interface ViewMarker extends ViewItemBase {
@@ -193,7 +194,7 @@ export interface ResearchView {
   default_tf: string;
   timeframes: Record<string, { ts: number[]; open: number[]; high: number[]; low: number[]; close: number[] }>;
   tf_roles: Record<string, string>;
-  layers: { id: string; label: string; default_on: boolean }[];
+  layers: { id: string; label: string; default_on: boolean; group?: string | null }[];
   items: ViewItem[];
   lines: { layer: string; id: string; label: string; tf: string; color: string; bar_ms: number; ts: number[]; value: number[] }[];
   bar_colors: { layer: string; tf: string; ts: number[]; color: string; bar_ms: number }[];
@@ -479,6 +480,68 @@ export interface Candles {
   volume: number[];
 }
 
+// ------------------------------------------------------------------- chart workspace
+export interface ChartCandles {
+  ts: number[];
+  open: number[];
+  high: number[];
+  low: number[];
+  close: number[];
+  volume: number[];
+}
+export interface ChartSegment {
+  name: string;      // IS | OBSERVED | ALL
+  start_ts: number;
+  end_ts: number;
+}
+export interface ChartWindow {
+  inst_id: string;
+  timeframe: string;
+  start_ts: number;
+  end_ts: number;
+  segment: string;
+  clipped_to_allowed_segment: boolean;
+  allowed_segments: ChartSegment[];
+  max_window_bars: number;
+  candles: ChartCandles;
+  signals_valid_from_ts: number;
+  strategy: {
+    strategy_id: string; name: string; strategy_version: string; definition_version: string;
+    params_hash: string; config_hash: string; warmup_bars: number;
+  } | null;
+  view: ResearchView | null;
+}
+export interface RunTrade {
+  trade_id: number;
+  side: 1 | -1;
+  entry_ts: number;
+  entry_price: number;
+  exit_ts: number;
+  exit_price: number;
+  qty: number;
+  stop: number;
+  target: number | null;
+  net_pnl: number;
+  r_multiple: number;
+  exit_reason: string;
+  entry_reason: string;
+  bars_held: number;
+  fees: number;
+  funding: number;
+  slippage_cost: number;
+  entry_type: string | null;
+  signal_ts: number | null;
+  planned_net_rr: number | null;
+}
+export interface RunTrades {
+  run_id: string;
+  strategy_id: string;
+  strategy_version: string;
+  timeframe: string;
+  segment: string | null;
+  trades: RunTrade[];
+}
+
 export interface ResearchSplit {
   defined: boolean;
   name?: string;
@@ -542,6 +605,12 @@ export const api = {
       body: JSON.stringify({ inst_id, timeframe, days }),
     }),
   split: () => request<ResearchSplit>("/api/research/split"),
+  chartWindow: (body: {
+    inst_id: string; timeframe: string; start_ts: number; end_ts: number;
+    strategy_id: string | null; strategy_version: string | null;
+  }) => request<ChartWindow>("/api/chart/window", { method: "POST", body: JSON.stringify(body) }),
+  chartSegments: () => request<{ segments: ChartSegment[]; split: ResearchSplit | null }>("/api/chart/segments"),
+  runTrades: (runId: string) => request<RunTrades>(`/api/backtests/${runId}/trades`),
   strategies: () => request<StrategyInfo[]>("/api/strategies"),
   strategy: (id: string) => request<StrategyInfo>(`/api/strategies/${id}`),
   validate: (id: string, params: Record<string, unknown>) =>

@@ -10,7 +10,8 @@ Item types (times are UTC epoch ms):
   segment {t1, t2|None, end_known_ts|None, known_ts, price, color, width, dash, label}
   band    {t1, t2|None, end_known_ts|None, known_ts, fill}            (full-height time band)
   t2=None means "still open" -> drawn to the replay cutoff / end of data.
-  An item may carry `tf` to restrict it to one chart timeframe.
+  An item may carry `tf` to restrict it to one chart timeframe, or `max_tf` to hide it on charts
+  coarser than that timeframe (e.g. 15m setup boxes are noise on a 4H chart).
 Colors may be semantic tokens (bear, bull, neutral, accent, warn, zone, ote, muted, sweep) or CSS.
 """
 
@@ -55,26 +56,26 @@ class ResearchView:
         if role:
             self.tf_roles[tf] = role
 
-    def layer(self, layer_id: str, label: str, default_on: bool = True) -> None:
+    def layer(self, layer_id: str, label: str, default_on: bool = True, group: str | None = None) -> None:
         if not any(x["id"] == layer_id for x in self.layers):
-            self.layers.append({"id": layer_id, "label": label, "default_on": default_on})
+            self.layers.append({"id": layer_id, "label": label, "default_on": default_on, "group": group})
 
     def marker(self, layer: str, ts: int, known_ts: int, *, position: str = "above", shape: str = "circle",
-               color: str = "neutral", text: str = "", size: float = 1.0, tf: str | None = None) -> None:
-        self.items.append({"type": "marker", "layer": layer, "tf": tf, "ts": ts, "known_ts": known_ts,
+               color: str = "neutral", text: str = "", size: float = 1.0, tf: str | None = None, max_tf: str | None = None) -> None:
+        self.items.append({"type": "marker", "layer": layer, "tf": tf, "max_tf": max_tf, "ts": ts, "known_ts": known_ts,
                            "position": position, "shape": shape, "color": color, "text": text, "size": size})
 
     def rect(self, layer: str, t1: int, t2: int | None, p1: float, p2: float, known_ts: int, *,
              end_known_ts: int | None = None, fill: str | None = None, stroke: str | None = None,
-             dash: bool = False, label: str = "", tf: str | None = None) -> None:
-        self.items.append({"type": "rect", "layer": layer, "tf": tf, "t1": t1, "t2": t2, "known_ts": known_ts,
+             dash: bool = False, label: str = "", tf: str | None = None, max_tf: str | None = None) -> None:
+        self.items.append({"type": "rect", "layer": layer, "tf": tf, "max_tf": max_tf, "t1": t1, "t2": t2, "known_ts": known_ts,
                            "end_known_ts": end_known_ts, "p1": p1, "p2": p2, "fill": fill, "stroke": stroke,
                            "dash": dash, "label": label})
 
     def segment(self, layer: str, t1: int, t2: int | None, price: float, known_ts: int, *,
                 end_known_ts: int | None = None, color: str = "neutral", width: float = 1, dash: bool = False,
-                label: str = "", tf: str | None = None) -> None:
-        self.items.append({"type": "segment", "layer": layer, "tf": tf, "t1": t1, "t2": t2, "known_ts": known_ts,
+                label: str = "", tf: str | None = None, max_tf: str | None = None) -> None:
+        self.items.append({"type": "segment", "layer": layer, "tf": tf, "max_tf": max_tf, "t1": t1, "t2": t2, "known_ts": known_ts,
                            "end_known_ts": end_known_ts, "price": price, "color": color, "width": width,
                            "dash": dash, "label": label})
 
@@ -116,8 +117,8 @@ class ResearchView:
 def add_signal_layers(view: ResearchView, signals: pd.DataFrame, bars: pd.DataFrame, bar_ms: int,
                       start: int, end: int, horizon_bars: int = 60) -> None:
     """Generic entry markers + stop/target segments + signal table (used by every strategy)."""
-    view.layer("signals", "Entry signals")
-    view.layer("sltp", "Stop / target")
+    view.layer("signals", "진입 신호", group="signals")
+    view.layer("sltp", "신호의 손절 / 목표", group="sltp")
     ts = bars["ts"].to_numpy(dtype="int64")
     rows = []
     for i in signals.index[signals["entry"] != 0]:

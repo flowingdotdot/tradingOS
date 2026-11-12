@@ -14,18 +14,21 @@ from tradingos.strategy.view import ResearchView, add_signal_layers
 if TYPE_CHECKING:
     from tradingos.strategy.builtin.ict_ote import Analysis, TfFeatures
 
+# (id, label, default on, group). Groups are what the Chart Workspace offers as layer switches;
+# switching a layer changes the DISPLAY only, never the strategy's decisions.
 LAYERS = [
-    ("swings", "Confirmed swings", True),
-    ("known", "Recognition time (✓)", False),
-    ("structure", "BOS / MSS", True),
-    ("sweeps", "Liquidity sweeps", False),
-    ("displacement", "Displacement candles", False),
-    ("fvg_bear", "Bearish FVG", True),
-    ("fvg_bull", "Bullish FVG", False),
-    ("bias", "HTF bias background", True),
-    ("dealing", "Dealing range", True),
-    ("ote", "OTE zone", True),
-    ("zones", "Entry zone (OTE∩FVG)", True),
+    ("swings", "시장 구조: 확정 스윙 (HH/HL/LH/LL)", True, "structure"),
+    ("known", "인식 시각 표시 (✓)", False, "structure"),
+    ("structure", "BOS / MSS", True, "bos_mss"),
+    ("sweeps", "유동성 스윕", False, "bos_mss"),
+    ("displacement", "Displacement 캔들", False, "bos_mss"),
+    ("fvg_bear", "FVG (약세)", True, "fvg"),
+    ("fvg_bull", "FVG (강세)", False, "fvg"),
+    ("bias", "상위 TF 바이어스 (배경)", True, "htf_bias"),
+    ("dealing", "Dealing Range (A–B, 균형가)", True, "ote"),
+    ("dealing_filtered", "필터에서 탈락한 임펄스 (바이어스 불일치 / 구역 없음)", False, "ote"),
+    ("ote", "OTE 구간 (0.62 / 0.705 / 0.79)", True, "ote"),
+    ("zones", "진입 구역 (OTE∩FVG)", True, "ote"),
 ]
 
 
@@ -37,10 +40,23 @@ def _tf_overlays(view: ResearchView, f: TfFeatures, start: int, end: int) -> Non
     def in_range(df):
         return df[(df["ts"] >= start) & (df["ts"] < end)] if not df.empty else df
 
+    # HH / LH / HL / LL: each confirmed swing against the previous confirmed swing of the same kind
+    # (the comparison the bias rule itself makes). The first swing of a kind has no reference.
+    prev: dict[str, float] = {}
+    labels: dict[int, str] = {}
+    for r in f.swings.sort_values(["known_idx", "idx"]).itertuples():
+        p = prev.get(r.kind)
+        if p is None:
+            labels[r.Index] = "SH" if r.kind == "high" else "SL"
+        elif r.kind == "high":
+            labels[r.Index] = "HH" if r.price > p else "LH" if r.price < p else "EH"
+        else:
+            labels[r.Index] = "HL" if r.price > p else "LL" if r.price < p else "EL"
+        prev[r.kind] = float(r.price)
     for r in in_range(f.swings).itertuples():
         high = r.kind == "high"
         view.marker("swings", int(r.ts), int(r.known_ts), position="above" if high else "below", shape="circle",
-                    color="bear" if high else "bull", text="SH" if high else "SL", size=0.6, tf=tf)
+                    color="bear" if high else "bull", text=labels[r.Index], size=0.6, tf=tf)
         view.marker("known", int(r.known_ts - ms), int(r.known_ts), position="above" if high else "below",
                     shape="square", color="muted", text=f"✓{'SH' if high else 'SL'}+{int(r.known_idx - r.idx)}",
                     size=0.4, tf=tf)
@@ -73,8 +89,8 @@ def _tf_overlays(view: ResearchView, f: TfFeatures, start: int, end: int) -> Non
 
 def build_ict_view(a: Analysis, start: int, end: int) -> ResearchView:
     view = ResearchView(a.impulse.tf.value)
-    for layer_id, label, on in LAYERS:
-        view.layer(layer_id, label, on)
+    for layer_id, label, on, grp in LAYERS:
+        view.layer(layer_id, label, on, group=grp)
     for f, role in ((a.base, "trigger"), (a.impulse, "setup"), (a.bias, "bias")):
         view.candles(f.tf.value, f.bars, start, end, role=role)
         _tf_overlays(view, f, start, end)
@@ -92,22 +108,32 @@ def build_ict_view(a: Analysis, start: int, end: int) -> ResearchView:
         view.band("bias", known, nxt, known, "bear_bg" if b[i] < 0 else "bull_bg", end_known_ts=nxt)
 
     setups = [s for s in a.setups if start <= s["known_ts"] < end]
+    # Setup geometry lives on the impulse timeframe: it is hidden on coarser charts (max_tf).
+    # Impulses the strategy discarded immediately (bias not bearish / no zone) go to a separate
+    # layer that is off by default, so the chart shows what the strategy actually worked with.
+    mtf = a.impulse.tf.value
     for s in setups:
         known, end_ts = s["known_ts"], s["end_ts"]
+        if s["status"] in ("bias_not_bearish", "no_zone"):
+            view.rect("dealing_filtered", s["a_ts"], end_ts, s["b"], s["a"], known, end_known_ts=end_ts,
+                      stroke="muted", dash=True, label=f"#{s['id']} {s['status']}", max_tf=mtf)
+            continue
         view.rect("dealing", s["a_ts"], end_ts, s["b"], s["a"], known, end_known_ts=end_ts, stroke="neutral",
-                  dash=True, label=f"#{s['id']} {s['status']}")
+                  dash=True, label=f"#{s['id']} {s['status']}", max_tf=mtf)
         view.segment("dealing", s["b_ts"], end_ts, s["equilibrium"], known, end_known_ts=end_ts, color="neutral",
-                     dash=True, label="EQ")
+                     dash=True, label="EQ", max_tf=mtf)
         view.marker("dealing", s["a_ts"], known, position="above", shape="arrowDown", color="neutral",
-                    text=f"A#{s['id']}", size=0.6)
+                    text=f"A#{s['id']}", size=0.6, max_tf=mtf)
         view.marker("dealing", s["b_ts"], known, position="below", shape="arrowUp", color="neutral",
-                    text=f"B#{s['id']}", size=0.6)
-        view.rect("ote", known, end_ts, s["ote_low"], s["ote_high"], known, end_known_ts=end_ts, fill="ote_fill")
-        view.segment("ote", known, end_ts, s["ote_ref"], known, end_known_ts=end_ts, color="ote", dash=True,
-                     label="0.705")
+                    text=f"B#{s['id']}", size=0.6, max_tf=mtf)
+        view.rect("ote", known, end_ts, s["ote_low"], s["ote_high"], known, end_known_ts=end_ts, fill="ote_fill",
+                  max_tf=mtf)
+        for px, lab in ((s["ote_low"], "0.62"), (s["ote_ref"], "0.705"), (s["ote_high"], "0.79")):
+            view.segment("ote", known, end_ts, px, known, end_known_ts=end_ts, color="ote", dash=True,
+                         label=f"{lab}  {px:.1f}", max_tf=mtf)
         for z in s["zones"]:
             view.rect("zones", known, end_ts, z["bottom"], z["top"], known, end_known_ts=end_ts, fill="zone_fill",
-                      stroke="zone")
+                      stroke="zone", max_tf=mtf)
 
     add_signal_layers(view, a.signals, a.base.bars.reset_index(drop=True), base_ms, start, end)
 

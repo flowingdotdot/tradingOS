@@ -9,12 +9,12 @@ import {
   type StrategyInstance,
   type Trade,
   type ValidationResult,
-  type ViewItem,
   type ViewTable,
 } from "../api";
 import { InspectorPanel } from "../components/InspectorPanel";
 import { ComponentToggles, ParamForm, resetInert, setPath, type Params } from "../components/ParamForm";
 import { ResearchChart } from "../components/ResearchChart";
+import { tradeItems } from "../components/tradeItems";
 import { TF_MS } from "../components/viewOverlay";
 import { DAY_MS, fmtDate, fmtNum, fmtTs } from "../format";
 
@@ -31,26 +31,6 @@ export interface LabPreset {
   timeframe: string;
   trade: Trade;
   nonce: number;
-}
-
-function tradeItems(t: Trade, barMs: number): ViewItem[] {
-  const long = t.side === 1;
-  const base = { layer: "trade", tf: null };
-  const items: ViewItem[] = [
-    { ...base, type: "marker", ts: t.entry_ts, known_ts: t.entry_ts, position: long ? "below" : "above",
-      shape: long ? "arrowUp" : "arrowDown", color: "accent", text: `FILL #${t.trade_id} ${t.entry_price.toFixed(1)}`, size: 1.4 },
-    { ...base, type: "marker", ts: t.exit_ts, known_ts: t.exit_ts + barMs, position: long ? "above" : "below",
-      shape: "circle", color: t.net_pnl > 0 ? "bull" : "warn",
-      text: `EXIT ${t.exit_reason} ${t.exit_price.toFixed(1)} (${t.r_multiple >= 0 ? "+" : ""}${t.r_multiple.toFixed(2)}R)`, size: 1.4 },
-    { ...base, type: "segment", t1: t.entry_ts, t2: t.exit_ts, end_known_ts: t.entry_ts, known_ts: t.entry_ts,
-      price: t.entry_price, color: "accent", width: 2, dash: false, label: "entry" },
-    { ...base, type: "segment", t1: t.entry_ts, t2: t.exit_ts, end_known_ts: t.entry_ts, known_ts: t.entry_ts,
-      price: t.stop, color: "bear", width: 2, dash: true, label: "stop" },
-  ];
-  if (t.target != null)
-    items.push({ ...base, type: "segment", t1: t.entry_ts, t2: t.exit_ts, end_known_ts: t.entry_ts,
-      known_ts: t.entry_ts, price: t.target, color: "bull", width: 2, dash: true, label: "target" });
-  return items;
 }
 
 const statusTone = (s: unknown) => {
@@ -232,7 +212,7 @@ export function StrategyLab({ onBacktest, preset }: { onBacktest: (p: BacktestPr
           });
       setResearch(r);
       setChartTf(over ? over.timeframe : r.view.default_tf);
-      setLayers(new Set([...r.view.layers.filter((l) => l.default_on).map((l) => l.id), "trade"]));
+      setLayers(new Set([...r.view.layers.filter((l) => l.default_on).map((l) => l.id), "fills", "trade_sltp"]));
       setTableId(r.view.tables[0]?.id ?? "");
       setCutoff(null);
       setTrade(over?.trade ?? null);

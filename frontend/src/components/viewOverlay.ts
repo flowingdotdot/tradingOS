@@ -45,15 +45,22 @@ export interface Overlay {
   barColors: Map<number, string>;
 }
 
-export function buildViewOverlay(view: ResearchView, tf: string, layers: Set<string>, cutoff: number | null): Overlay {
+export function buildViewOverlay(
+  view: ResearchView,
+  tf: string,
+  layers: Set<string>,
+  cutoff: number | null,
+  lastCandleTs?: number, // when the candles are supplied separately (Chart Workspace windows)
+): Overlay {
   const barMs = TF_MS[tf];
   const cd = view.timeframes[tf];
-  const lastTs = cd?.ts.length ? cd.ts[cd.ts.length - 1] : 0;
+  const lastTs = lastCandleTs ?? (cd?.ts.length ? cd.ts[cd.ts.length - 1] : 0);
   const horizon = cutoff != null ? Math.min(cutoff - barMs, lastTs) : lastTs;
   const known = (k: number | null | undefined) => k != null && (cutoff == null || k <= cutoff);
   const floor = (ms: number) => Math.floor(ms / barMs) * barMs;
-  const visible = (it: { layer: string; tf: string | null; known_ts: number }) =>
-    layers.has(it.layer) && (it.tf == null || it.tf === tf) && known(it.known_ts);
+  const visible = (it: { layer: string; tf: string | null; max_tf?: string | null; known_ts: number }) =>
+    layers.has(it.layer) && (it.tf == null || it.tf === tf) && (!it.max_tf || barMs <= TF_MS[it.max_tf]) &&
+    known(it.known_ts);
   const endOf = (t2: number | null, endKnown: number | null) =>
     t2 != null && (endKnown == null || known(endKnown)) ? t2 : horizon;
 

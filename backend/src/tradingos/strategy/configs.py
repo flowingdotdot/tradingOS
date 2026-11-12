@@ -23,7 +23,7 @@ from tradingos.strategy.registry import (
     STRATEGY_CLASSES,
     StrategyConfig,
     canonical_hash,
-    load_versions,
+    load_repo_entries,
     resolve_config,
 )
 from tradingos.strategy.schema import ConfigValidationError
@@ -78,7 +78,11 @@ class ConfigStore:
         out: list[dict[str, Any]] = []
         with self._conn() as con:
             known = {(r["strategy_id"], r["version"]): r for r in con.execute("SELECT * FROM strategy_configs")}
-            for cfg in self._repo_configs():
+            for cfg, info in self._repo_entries():
+                if cfg is None:
+                    out.append({"strategy_id": info["strategy_id"], "version": info["version"], "source": "repo",
+                                "source_file": info["source_file"], "integrity": "invalid", "error": info["error"]})
+                    continue
                 key = (cfg.strategy_id, cfg.version)
                 row = known.get(key)
                 if row is None:
@@ -142,8 +146,8 @@ class ConfigStore:
             )
         return cfg
 
-    def _repo_configs(self) -> list[StrategyConfig]:
-        return load_versions(self.repo_dir) if self.repo_dir.exists() else []
+    def _repo_entries(self):
+        return load_repo_entries(self.repo_dir) if self.repo_dir.exists() else []
 
 
 def _now() -> str:

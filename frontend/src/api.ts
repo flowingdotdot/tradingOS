@@ -220,6 +220,92 @@ export interface ResearchResult {
   view: ResearchView;
 }
 
+// --------------------------------------------------------------------- signal inspector
+export type StageStatus = "PASS" | "FAIL" | "NOT_APPLICABLE" | "NOT_EVALUATED" | "PENDING";
+export interface StageResult {
+  status: StageStatus;
+  value: unknown;
+  reason: string;
+}
+export interface EvidenceItem {
+  what: string;
+  tf: string;
+  ts: number;        // where it occurred (drawn on the chart)
+  known_ts: number;  // when the algorithm could first know it
+  ok?: boolean;
+  decision_ts?: number | null;
+}
+export interface InspectionCandidate {
+  id: number;
+  ts: number;
+  known_ts: number;
+  label: string;
+  info: Record<string, unknown>;
+  stages: Record<string, StageResult>; // a missing stage = NOT_EVALUATED (compact form)
+  outcome: string;
+  decision_ts: number | null;
+  evidence: EvidenceItem[];
+}
+export interface Inspection {
+  stages: { id: string; label: string; description: string; independent: boolean }[];
+  n_candidates: number;
+  n_signals: number;
+  funnel: {
+    stage: string; label: string; entered: number; passed: number; not_applicable: number; failed: number;
+    pending: number; not_evaluated: number; continue: number; fail_reasons: Record<string, number>;
+  }[];
+  conditions: {
+    stage: string; label: string; independent: boolean; evaluated: number; passed: number; failed: number;
+    pass_rate_pct: number | null; not_applicable: number; not_evaluated: number; pending: number;
+  }[];
+  outcomes: Record<string, number>;
+  candidates?: InspectionCandidate[];
+}
+export interface InspectResult {
+  strategy_id: string;
+  strategy_version: string;
+  draft: boolean;
+  supported: boolean;
+  params_hash: string;
+  timeframe: string;
+  start_ts: number;
+  end_ts: number;
+  warmup_bars: number;
+  warmup_available_bars: number;
+  data_first_ts: number;
+  data_last_ts: number;
+  inspection: Inspection | null;
+}
+export interface AuditTrade {
+  trade_id: number;
+  side: number;
+  entry_ts: number;
+  entry_price: number;
+  exit_ts: number;
+  exit_price: number;
+  stop: number;
+  target: number | null;
+  r_multiple: number;
+  exit_reason: string;
+  entry_reason: string;
+  signal_bar_ts: number | null;
+  decision_ts: number | null;
+  signal_bar_close: number;
+  planned_rr_at_signal: number | null;
+  planned_rr_at_fill: number | null;
+  signal_reproduced: boolean;
+  prefix_replay_ok: boolean | null;
+  evidence_ok: boolean | null;
+  evidence: (EvidenceItem & { ok: boolean })[];
+}
+export interface RunAudit {
+  run_id: string;
+  all_checks_passed: boolean;
+  same_market_data_as_run: boolean;
+  notes: string[];
+  trades: AuditTrade[];
+}
+
 // --------------------------------------------------------------------------- instances
 export interface StrategyInstance {
   instance_id: string;
@@ -352,6 +438,7 @@ export interface RunDetail extends RunSummary {
     params_hash: string;
     components: Record<string, boolean>;
   };
+  inspection?: Inspection | null;
   conditions?: {
     inst_id: string;
     timeframe: string;
@@ -454,6 +541,15 @@ export const api = {
     start_ts: number;
     end_ts: number;
   }) => request<ResearchResult>("/api/research/analyze", { method: "POST", body: JSON.stringify({ inst_id: "BTC-USDT-SWAP", ...body }) }),
+  inspect: (body: {
+    strategy_id: string;
+    strategy_version?: string | null;
+    draft_params?: Record<string, unknown> | null;
+    timeframe?: string | null;
+    start_ts: number;
+    end_ts: number;
+  }) => request<InspectResult>("/api/research/inspect", { method: "POST", body: JSON.stringify({ inst_id: "BTC-USDT-SWAP", ...body }) }),
+  audit: (runId: string) => request<RunAudit>(`/api/backtests/${runId}/audit`),
   instances: () => request<StrategyInstance[]>("/api/instances"),
   instance: (id: string) => request<InstanceDetail>(`/api/instances/${id}`),
   createInstance: (body: { strategy_id: string; config_version: string; timeframe: string; environment: string; capital_allocation: number }) =>

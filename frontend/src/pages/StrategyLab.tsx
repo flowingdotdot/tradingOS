@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type InstanceDetail,
   type ResearchResult,
   type StrategyConfig,
   type StrategyInfo,
+  type InspectResult,
   type StrategyInstance,
+  type Trade,
   type ValidationResult,
+  type ViewItem,
   type ViewTable,
 } from "../api";
-import { ComponentToggles, ParamForm, setPath, type Params } from "../components/ParamForm";
+import { InspectorPanel } from "../components/InspectorPanel";
+import { ComponentToggles, ParamForm, resetInert, setPath, type Params } from "../components/ParamForm";
 import { ResearchChart } from "../components/ResearchChart";
 import { TF_MS } from "../components/viewOverlay";
 import { DAY_MS, fmtDate, fmtNum, fmtTs } from "../format";
@@ -18,6 +22,35 @@ export interface BacktestPreset {
   strategy_id: string;
   version: string;
   timeframe: string;
+}
+
+/** Open the lab on a saved version around one backtest trade (entry reason + exit on the chart). */
+export interface LabPreset {
+  strategy_id: string;
+  version: string;
+  timeframe: string;
+  trade: Trade;
+  nonce: number;
+}
+
+function tradeItems(t: Trade, barMs: number): ViewItem[] {
+  const long = t.side === 1;
+  const base = { layer: "trade", tf: null };
+  const items: ViewItem[] = [
+    { ...base, type: "marker", ts: t.entry_ts, known_ts: t.entry_ts, position: long ? "below" : "above",
+      shape: long ? "arrowUp" : "arrowDown", color: "accent", text: `FILL #${t.trade_id} ${t.entry_price.toFixed(1)}`, size: 1.4 },
+    { ...base, type: "marker", ts: t.exit_ts, known_ts: t.exit_ts + barMs, position: long ? "above" : "below",
+      shape: "circle", color: t.net_pnl > 0 ? "bull" : "warn",
+      text: `EXIT ${t.exit_reason} ${t.exit_price.toFixed(1)} (${t.r_multiple >= 0 ? "+" : ""}${t.r_multiple.toFixed(2)}R)`, size: 1.4 },
+    { ...base, type: "segment", t1: t.entry_ts, t2: t.exit_ts, end_known_ts: t.entry_ts, known_ts: t.entry_ts,
+      price: t.entry_price, color: "accent", width: 2, dash: false, label: "entry" },
+    { ...base, type: "segment", t1: t.entry_ts, t2: t.exit_ts, end_known_ts: t.entry_ts, known_ts: t.entry_ts,
+      price: t.stop, color: "bear", width: 2, dash: true, label: "stop" },
+  ];
+  if (t.target != null)
+    items.push({ ...base, type: "segment", t1: t.entry_ts, t2: t.exit_ts, end_known_ts: t.entry_ts,
+      known_ts: t.entry_ts, price: t.target, color: "bull", width: 2, dash: true, label: "target" });
+  return items;
 }
 
 const statusTone = (s: unknown) => {
@@ -67,7 +100,10 @@ function GenericTable({ table, cutoff, onFocus }: {
   );
 }
 
-export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) => void }) {
+export function StrategyLab({ onBacktest, preset }: { onBacktest: (p: BacktestPreset) => void; preset: LabPreset | null }) {
+  const presetRef = useRef<LabPreset | null>(null);
+  const [trade, setTrade] = useState<Trade | null>(null);
+  const [inspect, setInspect] = useState<InspectResult | null>(null);
   const [catalog, setCatalog] = useState<StrategyInfo[]>([]);
   const [sid, setSid] = useState<string | null>(null);
   const info = catalog.find((s) => s.strategy_id === sid) ?? null;
@@ -118,11 +154,14 @@ export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) =>
   // selecting a strategy -> first config, its params, its default timeframe
   useEffect(() => {
     if (!info) return;
-    const first = info.configs.find((c) => c.integrity === "ok");
+    const want = presetRef.current?.strategy_id === info.strategy_id ? presetRef.current.version : null;
+    const first = info.configs.find((c) => c.integrity === "ok" && (want == null || c.version === want))
+      ?? info.configs.find((c) => c.integrity === "ok");
     setBaseVersion(first?.version ?? null);
     setValues((first?.params as Params) ?? info.default_params);
-    setRunTf(info.data.base_timeframes[0]);
+    setRunTf(want != null ? presetRef.current!.timeframe : info.data.base_timeframes[0]);
     setResearch(null);
+    setInspect(null);
     setInstance(null);
     setNewVersion("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -176,31 +215,81 @@ export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) =>
     }
   }
 
-  async function analyze(draft: boolean) {
-    if (!info) return;
+  async function analyze(draft: boolean, over?: { strategy_id: string; version: string; timeframe: string; start: number; end: number; trade: Trade }) {
+    if (!info && !over) return;
     setBusy(true);
     setError(null);
     try {
-      const r = await api.research({
-        strategy_id: info.strategy_id,
-        strategy_version: draft ? null : baseVersion,
-        draft_params: draft ? values : null,
-        timeframe: runTf,
-        start_ts: Date.parse(`${start}T00:00:00Z`),
-        end_ts: Math.min(Date.parse(`${end}T00:00:00Z`), Date.now()),
-      });
+      const r = await api.research(over
+        ? { strategy_id: over.strategy_id, strategy_version: over.version, timeframe: over.timeframe, start_ts: over.start, end_ts: over.end }
+        : {
+            strategy_id: info!.strategy_id,
+            strategy_version: draft ? null : baseVersion,
+            draft_params: draft ? values : null,
+            timeframe: runTf,
+            start_ts: Date.parse(`${start}T00:00:00Z`),
+            end_ts: Math.min(Date.parse(`${end}T00:00:00Z`), Date.now()),
+          });
       setResearch(r);
-      setChartTf(r.view.default_tf);
-      setLayers(new Set(r.view.layers.filter((l) => l.default_on).map((l) => l.id)));
+      setChartTf(over ? over.timeframe : r.view.default_tf);
+      setLayers(new Set([...r.view.layers.filter((l) => l.default_on).map((l) => l.id), "trade"]));
       setTableId(r.view.tables[0]?.id ?? "");
       setCutoff(null);
-      setFocus(null);
+      setTrade(over?.trade ?? null);
+      setFocus(over ? { from: over.trade.entry_ts - 6 * 3_600_000, to: over.trade.exit_ts } : null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
+
+  // Opened from Backtest Lab on one trade: load that version and chart the days around it.
+  useEffect(() => {
+    if (!preset || !catalog.length || presetRef.current?.nonce === preset.nonce) return;
+    presetRef.current = preset;
+    if (sid === preset.strategy_id) {
+      // same strategy already selected: the "strategy changed" effect will not run, switch version here
+      const c = usable.find((x) => x.version === preset.version);
+      if (c) {
+        setBaseVersion(c.version);
+        setValues(c.params as Params);
+      }
+      setRunTf(preset.timeframe);
+    }
+    setSid(preset.strategy_id);
+    const day = 86_400_000;
+    const s0 = Math.floor(preset.trade.entry_ts / day) * day - 3 * day;
+    const e0 = Math.min(Math.floor(preset.trade.exit_ts / day) * day + 2 * day, Date.now());
+    setStart(fmtDate(s0));
+    setEnd(fmtDate(e0));
+    void analyze(false, { strategy_id: preset.strategy_id, version: preset.version, timeframe: preset.timeframe,
+      start: s0, end: e0, trade: preset.trade });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset, catalog]);
+
+  async function runInspect(draft: boolean) {
+    if (!info) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setInspect(await api.inspect({
+        strategy_id: info.strategy_id,
+        strategy_version: draft ? null : baseVersion,
+        draft_params: draft ? values : null,
+        timeframe: runTf,
+        start_ts: Date.parse(`${start}T00:00:00Z`),
+        end_ts: Math.min(Date.parse(`${end}T00:00:00Z`), Date.now()),
+      }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const change = (path: string, v: unknown) =>
+    setValues((cur) => (info ? resetInert(info.param_specs, setPath(cur, path, v)) : setPath(cur, path, v)));
 
   async function createInstance() {
     if (!info || !baseVersion) return;
@@ -237,6 +326,10 @@ export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) =>
   const hidden = new Set(info?.component_toggle_paths ?? []);
   const myInstances = instances.filter((i) => i.strategy_id === sid);
   const table = research?.view.tables.find((t) => t.id === tableId);
+  const chartView = useMemo(
+    () => (research ? (trade ? { ...research.view, items: [...research.view.items, ...tradeItems(trade, TF_MS[research.timeframe] ?? 300_000)] } : research.view) : null),
+    [research, trade],
+  );
 
   return (
     <div className="page">
@@ -299,13 +392,13 @@ export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) =>
             </div>
 
             <h3>Components</h3>
-            <ComponentToggles components={info.components} values={values} errors={errorMap}
-              onChange={(p, v) => setValues((cur) => setPath(cur, p, v))} />
+            <ComponentToggles components={info.components} values={values} errors={errorMap} onChange={change} />
             {info.component_rules.map((r) => <p key={r.message} className="fine">Rule: {r.message}</p>)}
 
             <h3>Parameters</h3>
             <ParamForm specs={info.param_specs} values={values} errors={errorMap} hiddenPaths={hidden}
-              showAdvanced={showAdvanced} onChange={(p, v) => setValues((cur) => setPath(cur, p, v))} />
+              showAdvanced={showAdvanced} onChange={change} />
+            <p className="fine">Parameters of a switched-off component have no effect; they are reset to their defaults (the backend rejects inert non-default values).</p>
 
             <div className="save-row">
               <label>
@@ -397,6 +490,10 @@ export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) =>
               {busy ? "Analyzing…" : `Analyze ${baseVersion ?? ""}`}
             </button>
             <button disabled={busy || !validation?.ok} onClick={() => analyze(true)}>Analyze unsaved draft</button>
+            <button disabled={busy || !baseVersion} onClick={() => runInspect(false)} title="Funnel of every candidate signal; not limited to 60 days">
+              Inspect signals ({baseVersion ?? ""})
+            </button>
+            <button disabled={busy || !validation?.ok} onClick={() => runInspect(true)}>Inspect draft</button>
             {research && (
               <>
                 <label>
@@ -443,7 +540,14 @@ export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) =>
                 {research.strategy_name} · {research.strategy_version} · params #{research.params_hash.slice(0, 10)} · code {research.code_revision} · data #{research.data_fingerprint.slice(0, 8)}.
                 Structures are drawn where they occurred but only usable from their known time — use Knowledge replay. Research only; no profitability implied.
               </div>
-              <ResearchChart view={research.view} viewKey={`${research.strategy_id}|${research.strategy_version}|${research.start_ts}|${research.end_ts}|${research.params_hash}`}
+              {trade && (
+                <div className="alert info">
+                  Trade #{trade.trade_id} from Backtest Lab: fill {fmtTs(trade.entry_ts)} @ {fmtNum(trade.entry_price, 1)} → exit{" "}
+                  {fmtTs(trade.exit_ts)} @ {fmtNum(trade.exit_price, 1)} ({trade.exit_reason}, {trade.r_multiple.toFixed(2)}R). {trade.entry_reason}{" "}
+                  <button onClick={() => setTrade(null)}>hide trade</button>
+                </div>
+              )}
+              <ResearchChart view={chartView!} viewKey={`${research.strategy_id}|${research.strategy_version}|${research.start_ts}|${research.end_ts}|${research.params_hash}`}
                 tf={chartTf} layers={layers} cutoff={replay ? cutoff : null} focus={focus}
                 onBarClick={(ts) => replay && setCutoff(ts + barMs)} />
               <p className="fine">{research.view.summary.map((s) => `${s.label}: ${String(s.value)}`).join(" · ")}</p>
@@ -454,6 +558,28 @@ export function StrategyLab({ onBacktest }: { onBacktest: (p: BacktestPreset) =>
               </div>
               {table && <GenericTable table={table} cutoff={replay ? cutoff : null} onFocus={setFocus} />}
             </>
+          )}
+        </section>
+      )}
+
+      {inspect && (
+        <section className="panel">
+          <div className="panel-head">
+            <h2>
+              Signal Inspector — {inspect.strategy_id}:{inspect.strategy_version} · {inspect.timeframe} · {fmtDate(inspect.start_ts)} → {fmtDate(inspect.end_ts)}
+              {inspect.draft ? " · UNSAVED DRAFT" : ""}
+            </h2>
+            <button onClick={() => setInspect(null)}>close</button>
+          </div>
+          {inspect.warmup_available_bars < inspect.warmup_bars && (
+            <div className="alert error">
+              Only {inspect.warmup_available_bars} of {inspect.warmup_bars} warm-up bars are stored before the start date: early candidates are evaluated with incomplete higher-timeframe context.
+            </div>
+          )}
+          {inspect.supported && inspect.inspection ? (
+            <InspectorPanel inspection={inspect.inspection} onFocus={research ? setFocus : undefined} />
+          ) : (
+            <p className="dim">This strategy does not record a signal inspection (plugins opt in by overriding <span className="mono">evaluate()</span>).</p>
           )}
         </section>
       )}

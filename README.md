@@ -5,6 +5,8 @@ investment-research track. **LIVE trading is hard-disabled.** Nothing here is a 
 
 - Docs: [Product](docs/PRODUCT_SPEC.md) · [Architecture](docs/ARCHITECTURE.md) · [Risk](docs/RISK_POLICY.md) ·
   [Roadmap](docs/ROADMAP.md) · [Investment Intelligence](docs/INVESTMENT_INTELLIGENCE_SPEC.md)
+- Backtesting: [Execution model](docs/BACKTEST_EXECUTION_MODEL.md) · [Data expansion plan](docs/DATA_EXPANSION_PLAN.md) ·
+  [UI smoke checklist](docs/UI_SMOKE_CHECKLIST.md)
 - Strategies: [Plugin spec](docs/STRATEGY_PLUGIN_SPEC.md) · [Development guide](docs/STRATEGY_DEVELOPMENT_GUIDE.md) ·
   [Registry & versions](docs/STRATEGY_REGISTRY.md) · [Per-strategy docs](docs/strategies/)
 
@@ -36,7 +38,11 @@ npm install          # if TLS errors: set NODE_OPTIONS=--use-system-ca
 # 1) collect data (public OKX endpoint, no API key)
 backend/.venv/Scripts/tradingos collect --tf 15m --days 180
 
-# 2) optional: list plugins, backtest from the CLI
+# data tools: what OKX actually serves, integrity + 5m/15m/4H consistency of stored data
+backend/.venv/Scripts/tradingos data-range
+backend/.venv/Scripts/tradingos data-check
+
+# 2) optional: list plugins, backtest from the CLI, audit a run for look-ahead (tradingos audit --run <id>)
 backend/.venv/Scripts/tradingos strategies
 backend/.venv/Scripts/tradingos backtest --strategy ma_crossover --version v1 --tf 15m --days 150
 

@@ -75,7 +75,8 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
     if test_mask.sum() < 2:
         raise BacktestInputError("not enough candles inside the test period")
 
-    signals = strategy.generate_signals(bars)
+    # One evaluation yields both the signals and (if the plugin records it) the Signal Inspector.
+    signals, inspection = strategy.evaluate(bars)
     signals.loc[~test_mask, ["entry"]] = 0
     signals.loc[~test_mask, ["exit_long", "exit_short"]] = False
     first = int(test_mask.argmax())
@@ -156,6 +157,8 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
         "trades": [t.model_dump() for t in result.trades],
         "rejections": [r.model_dump() for r in result.rejections],
         "equity": result.equity.assign(in_position=result.equity["in_position"].astype(int)).to_dict("list"),
+        "inspection": (inspection.summarize(config.start_ts, config.end_ts, compact=True)
+                       if inspection is not None else None),
         "data_quality": quality.to_dict(),
         "notes": notes,
         "disclaimer": DISCLAIMER,

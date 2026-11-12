@@ -16,13 +16,19 @@ import { MetricsGrid } from "../components/MetricsGrid";
 import { PriceChart } from "../components/PriceChart";
 import { ComparePanel } from "../components/ComparePanel";
 import { MonthlyTable, RunsTable, TradeTable } from "../components/Tables";
-import type { BacktestPreset } from "./StrategyLab";
+import { InspectorPanel } from "../components/InspectorPanel";
+import { TradeAudit } from "../components/TradeAudit";
+import type { BacktestPreset, LabPreset } from "./StrategyLab";
 import { DAY_MS, fmtDate, fmtNum, fmtTs } from "../format";
 
 const TF_MS: Record<string, number> = { "1m": 60e3, "5m": 300e3, "15m": 900e3, "1H": 3600e3, "4H": 14400e3 };
 const INST = "BTC-USDT-SWAP";
 
-export function BacktestLab({ system, preset }: { system: SystemInfo | null; preset: BacktestPreset | null }) {
+export function BacktestLab({ system, preset, onInspectTrade }: {
+  system: SystemInfo | null;
+  preset: BacktestPreset | null;
+  onInspectTrade: (p: Omit<LabPreset, "nonce">) => void;
+}) {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -326,6 +332,19 @@ export function BacktestLab({ system, preset }: { system: SystemInfo | null; pre
             </div>
             <PriceChart candles={candles} trades={run.trades} focusTrade={focus} barMs={TF_MS[run.timeframe]} />
           </section>
+
+          <section className="panel">
+            <h2>Trade audit — look-ahead check & chart evidence</h2>
+            <TradeAudit runId={run.run_id} onOpenInLab={(t) => onInspectTrade({
+              strategy_id: run.strategy_id, version: run.strategy_version, timeframe: run.timeframe, trade: t })} />
+          </section>
+
+          {run.inspection && (
+            <section className="panel">
+              <h2>Signal Inspector — recorded with this run (why were there {run.metrics.total_trades} trades?)</h2>
+              <InspectorPanel inspection={run.inspection} />
+            </section>
+          )}
 
           <section className="panel">
             <h2>Equity & drawdown (mark-to-market)</h2>

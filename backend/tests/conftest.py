@@ -28,9 +28,11 @@ def random_walk_bars(n: int, seed: int = 7, tf: Timeframe = TF, t0: int = T0, st
 
 
 def zero_cost_config(bars: pd.DataFrame, **overrides) -> BacktestConfig:
+    step = int(bars["ts"].diff().dropna().min()) if len(bars) > 1 else TF.ms
     kw = dict(
         strategy_id="test",
         strategy_version="t",
+        timeframe=next((t.value for t in Timeframe if t.ms == step), TF.value),
         start_ts=int(bars["ts"].iloc[0]),
         end_ts=int(bars["ts"].iloc[-1]) + TF.ms,
         initial_capital=10_000.0,

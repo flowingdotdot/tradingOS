@@ -52,6 +52,7 @@ tradingOS/
 │   │   │   ├── base.py        # Strategy 기반 클래스, 신호 계약, 증분 상태, 기본 연구 화면
 │   │   │   ├── schema.py      # StrategyDefinition, DataRequirements, param()/ParamSpec, 컴포넌트
 │   │   │   ├── view.py        # ResearchView: 범용 도형(marker/rect/segment/band/line/table)
+│   │   │   ├── inspect.py     # Signal Inspector: 단계별 PASS/FAIL 기록, funnel/조건 집계, evidence
 │   │   │   ├── registry.py    # 플러그인 자동 발견, 설정 해석(resolve), describe
 │   │   │   ├── configs.py     # ConfigStore: 불변 설정 버전 (repo YAML + user), 무결성 검사
 │   │   │   ├── instances.py   # Strategy Instance, ON/OFF, DEMO 준비 점검, 이벤트 로그
@@ -68,7 +69,8 @@ tradingOS/
 │   │   │   └── metrics.py     # 성과 지표
 │   │   ├── storage/
 │   │   │   └── runs.py        # 백테스트 실행 Repository (SQLite)
-│   │   ├── services/          # 유스케이스 조립 (API/CLI가 공유): backtest_service, research_service
+│   │   ├── services/          # 유스케이스 조립 (API/CLI가 공유): backtest_service, research_service,
+│   │   │                      #   audit_service (신호 inspection, 거래별 look-ahead 감사)
 │   │   ├── api/app.py         # FastAPI
 │   │   └── cli.py             # `tradingos` 명령줄
 │   └── tests/
@@ -116,6 +118,8 @@ class Strategy:
 - 전략 OFF = 신규 진입 중단. 엔진은 `entries_allowed` 마스크로 이를 표현하며 기존 포지션의 손절·목표 관리는 계속된다.
 
 ### 3.3 백테스트 체결 모델 (보수적 가정)
+> 전체 규칙과 지원/미지원 목록: [BACKTEST_EXECUTION_MODEL.md](BACKTEST_EXECUTION_MODEL.md) (엔진 0.2.0).
+
 | 상황 | 처리 |
 |---|---|
 | 신호 (봉 i 종가 시점) | 봉 i+1 **시가**에 시장가 체결 + 불리한 방향 슬리피지 |
@@ -149,6 +153,7 @@ class Strategy:
 - 개발 모드: 브라우저가 `http://127.0.0.1:8000` 을 직접 호출 (CORS 허용 목록: Vite 개발/프리뷰 origin). Vite 개발 프록시는 0.6MB 이상 응답에서 멈추는 현상이 확인되어 사용하지 않는다.
 - 빌드/프리뷰: same-origin `/api` (프록시 또는 리버스 프록시). `VITE_API_BASE` 로 재정의 가능.
 - 응답은 GZip 압축 (백테스트 상세 ~0.9MB → ~0.17MB).
+- 원인 확인(2026-11-11): 이 개발 PC에서는 `Connection: close`로 요청한 큰 응답이 약 19초 뒤 끊긴다. Vite 개발 프록시와 Python `urllib`이 여기에 해당하고, keep-alive를 쓰는 브라우저·curl·httpx는 정상이다. 서버(uvicorn)와 로컬 보안 소프트웨어 중 어느 쪽 문제인지는 미확인.
 
 ### 3.9 네트워크/TLS
 - OKX 공개 API 클라이언트는 `truststore`로 **OS 인증서 저장소**를 사용한다 (백신의 HTTPS 검사 환경에서도 검증을 끄지 않고 동작).

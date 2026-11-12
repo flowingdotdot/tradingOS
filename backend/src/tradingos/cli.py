@@ -37,6 +37,17 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--days", type=int, default=120)
     b.add_argument("--capital", type=float, default=10_000)
 
+    d = sub.add_parser("data-range", help="probe how far back OKX actually serves candles")
+    d.add_argument("--inst", default="BTC-USDT-SWAP")
+    d.add_argument("--tf", nargs="+", default=["5m", "15m", "4H"], choices=[t.value for t in Timeframe])
+
+    k = sub.add_parser("data-check", help="integrity of stored candles + cross-timeframe consistency")
+    k.add_argument("--inst", default="BTC-USDT-SWAP")
+    k.add_argument("--write-meta", action="store_true", help="(re)write provenance sidecar files")
+
+    au = sub.add_parser("audit", help="per-trade look-ahead audit of a stored backtest run")
+    au.add_argument("--run", required=True)
+
     sub.add_parser("docs", help="regenerate docs/strategies/generated/*.md from plugin schemas")
     sub.add_parser("strategies", help="list discovered strategy plugins and their configurations")
 
@@ -55,7 +66,14 @@ def main(argv: list[str] | None = None) -> None:
 
         start = int(time.time() * 1000) - args.days * DAY_MS
         with OkxPublicClient(settings.okx_rest_base_url, use_system_ca=settings.use_system_ca) as client:
-            res = sync_history(client, CandleStore(settings.market_data_dir), args.inst, Timeframe(args.tf), start)
+            store = CandleStore(settings.market_data_dir)
+            res = sync_history(client, store, args.inst, Timeframe(args.tf), start)
+            from tradingos.marketdata.store import write_provenance
+            from tradingos.services.backtest_service import code_revision
+
+            write_provenance(store, args.inst, Timeframe(args.tf),
+                             source=f"{settings.okx_rest_base_url}/api/v5/market/history-candles",
+                             collector_revision=code_revision(), requested_start_ts=start)
         print(json.dumps({"fetched": res.fetched, "requests": res.requests, "stored_rows": res.stored_rows,
                           "dropped_unconfirmed": res.dropped_unconfirmed,
                           "validation": res.validation.to_dict()}, indent=2))
@@ -75,6 +93,49 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps({"run_id": run["run_id"], **{k: v for k, v in m.items() if k != "monthly"}},
                          indent=2, default=str))
         print("\nNOTE:", run["disclaimer"])
+    elif args.cmd == "data-range":
+        from datetime import UTC, datetime
+
+        from tradingos.marketdata.collector import find_earliest_candle
+        from tradingos.marketdata.okx_public import OkxPublicClient
+
+        with OkxPublicClient(settings.okx_rest_base_url, use_system_ca=settings.use_system_ca) as client:
+            for tf_name in args.tf:
+                r = find_earliest_candle(client, args.inst, Timeframe(tf_name))
+                e = r["earliest_ts"]
+                r["earliest_utc"] = datetime.fromtimestamp(e / 1000, UTC).isoformat() if e else None
+                r["days_available"] = round((time.time() * 1000 - e) / DAY_MS, 1) if e else 0
+                print(json.dumps(r))
+    elif args.cmd == "data-check":
+        from tradingos.marketdata.collector import check_mtf_consistency
+        from tradingos.marketdata.store import CandleStore, data_fingerprint
+        from tradingos.marketdata.validation import validate_candles
+
+        store = CandleStore(settings.market_data_dir)
+        for inst, tf in store.datasets():
+            if inst != args.inst:
+                continue
+            df = store.load(inst, tf)
+            v = validate_candles(df, tf)
+            print(json.dumps({"timeframe": tf.value, "rows": v.rows, "first_ts": v.first_ts, "last_ts": v.last_ts,
+                              "gaps": len(v.gaps), "missing_bars": v.missing_bars, "ok": v.ok,
+                              "fingerprint": data_fingerprint(df)[:16]}))
+            if args.write_meta:
+                from tradingos.marketdata.store import write_provenance
+                from tradingos.services.backtest_service import code_revision
+
+                write_provenance(store, inst, tf, source=f"{settings.okx_rest_base_url}/api/v5/market/history-candles",
+                                 collector_revision=code_revision())
+        for ltf, htf in ((Timeframe.M5, Timeframe.M15), (Timeframe.M5, Timeframe.H4), (Timeframe.M15, Timeframe.H4)):
+            print(json.dumps(check_mtf_consistency(store, args.inst, ltf, htf)))
+    elif args.cmd == "audit":
+        from tradingos.services.audit_service import audit_run
+        from tradingos.storage.runs import RunRepository
+
+        run = RunRepository(settings.db_path).get(args.run)
+        if run is None:
+            raise SystemExit(f"run {args.run} not found")
+        print(json.dumps(audit_run(settings, run), indent=2, default=str))
     elif args.cmd == "docs":
         from tradingos.strategy.docgen import write_all
 

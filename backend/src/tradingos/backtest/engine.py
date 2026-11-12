@@ -23,6 +23,7 @@ import pandas as pd
 
 from tradingos.backtest.models import BacktestConfig, Rejection, Trade
 from tradingos.domain.instruments import InstrumentSpec
+from tradingos.domain.timeframes import Timeframe
 from tradingos.risk.engine import RiskEngine
 from tradingos.strategy.base import has_limit_entries, validate_signals
 
@@ -88,6 +89,7 @@ def run_backtest(
     s_reason = signals["reason"].to_numpy()
 
     costs = config.costs
+    bar_ms = Timeframe(config.timeframe).ms
     slip = costs.slippage_bps / 10_000
     risk = RiskEngine(config.risk, instrument)
 
@@ -171,19 +173,32 @@ def run_backtest(
             j = pending_entry
             side = int(s_entry[j])
             fill = o[i] * (1 + slip * side)
-            decision = risk.authorize_entry(
+            tgt = float(s_target[j]) if np.isfinite(s_target[j]) else None
+            precheck = None
+            if ts[i] - ts[j] != bar_ms:
+                # bars are missing between the signal bar and this bar: the "next open" is not the
+                # next open the strategy assumed -> never execute a stale signal
+                precheck = "stale_signal_data_gap"
+            elif not (o[i] - s_stop[j]) * side > 0:
+                # the open itself is already at/through the stop (also covers a stop that sits
+                # inside the slippage between open and fill)
+                precheck = "stop_on_wrong_side"
+            elif tgt is not None and (tgt - fill) * side <= 0:
+                # the target was already reached at the fill: the trade idea is void. (Before
+                # engine 0.2.0 the target was dropped silently and the position kept open.)
+                precheck = "target_passed_at_fill"
+            decision = None if precheck else risk.authorize_entry(
                 side=side,
                 entry_price=fill,
                 stop_price=s_stop[j],
                 equity=cash,
                 open_positions=0 if pos is None else 1,
             )
-            if decision.approved:
+            if decision is None:
+                rejections.append(Rejection(ts=int(ts[i]), side=side, reason=precheck))
+            elif decision.approved:
                 fee = fill * decision.qty * costs.taker_fee_rate
                 cash -= fee
-                tgt = float(s_target[j]) if np.isfinite(s_target[j]) else None
-                if tgt is not None and (tgt - fill) * side <= 0:
-                    tgt = None  # target already passed at fill -> no target, rely on stop/exit
                 pos = _Position(
                     side=side,
                     qty=decision.qty,

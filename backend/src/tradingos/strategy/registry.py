@@ -108,16 +108,36 @@ def resolve_config(strategy_id: str, version: str, declared: dict[str, Any], **m
                           definition_version=cls.definition.definition_version, **meta)
 
 
-def load_versions(config_dir: Path) -> list[StrategyConfig]:
-    """Repository configurations (YAML). Pure: no integrity bookkeeping (see ConfigStore)."""
-    out: list[StrategyConfig] = []
+def load_repo_entries(config_dir: Path) -> list[tuple[StrategyConfig | None, dict[str, Any]]]:
+    """Every repository YAML as (config, info). A file that fails to parse or validate yields
+    (None, {strategy_id, version, source_file, error}) instead of breaking the other versions."""
+    out: list[tuple[StrategyConfig | None, dict[str, Any]]] = []
     for f in sorted(Path(config_dir).glob("*/*.yaml")):
-        raw = yaml.safe_load(f.read_text(encoding="utf-8"))
-        out.append(resolve_config(
-            raw["strategy_id"], str(raw["version"]), raw.get("params") or {},
-            status=raw.get("status", "DRAFT"), description=raw.get("description", ""), source="repo",
-            source_file=f"{f.parent.name}/{f.name}", parent_version=raw.get("parent_version"),
-        ))
+        info: dict[str, Any] = {"strategy_id": f.parent.name, "version": f.stem,
+                                "source_file": f"{f.parent.name}/{f.name}"}
+        try:
+            raw = yaml.safe_load(f.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("file is not a mapping")
+            info.update(strategy_id=str(raw["strategy_id"]), version=str(raw["version"]))
+            cfg = resolve_config(
+                info["strategy_id"], info["version"], raw.get("params") or {},
+                status=raw.get("status", "DRAFT"), description=raw.get("description", ""), source="repo",
+                source_file=info["source_file"], parent_version=raw.get("parent_version"),
+            )
+            out.append((cfg, info))
+        except Exception as exc:  # noqa: BLE001 — any bad file is reported, never fatal
+            out.append((None, {**info, "error": f"{type(exc).__name__}: {exc}"}))
+    return out
+
+
+def load_versions(config_dir: Path) -> list[StrategyConfig]:
+    """Valid repository configurations (strict: raises on the first invalid file)."""
+    out = []
+    for cfg, info in load_repo_entries(config_dir):
+        if cfg is None:
+            raise RegistryError(f"{info['source_file']}: {info['error']}")
+        out.append(cfg)
     return out
 
 

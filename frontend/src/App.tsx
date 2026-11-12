@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type SystemInfo } from "./api";
 import { BacktestLab } from "./pages/BacktestLab";
-import { StrategyLab, type BacktestPreset } from "./pages/StrategyLab";
+import { StrategyLab, type BacktestPreset, type LabPreset } from "./pages/StrategyLab";
 
 type PageId = "dashboard" | "strategy" | "backtest" | "desk" | "journal" | "intel" | "settings";
 
@@ -76,6 +76,7 @@ function Dashboard({ system }: { system: SystemInfo | null }) {
 export default function App() {
   const [page, setPage] = useState<PageId>("strategy");
   const [preset, setPreset] = useState<BacktestPreset | null>(null);
+  const [labPreset, setLabPreset] = useState<LabPreset | null>(null);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [apiDown, setApiDown] = useState(false);
 
@@ -111,9 +112,12 @@ export default function App() {
         )}
         {page === "dashboard" && <Dashboard system={system} />}
         {page === "strategy" && (
-          <StrategyLab onBacktest={(p) => { setPreset(p); setPage("backtest"); }} />
+          <StrategyLab preset={labPreset} onBacktest={(p) => { setPreset(p); setPage("backtest"); }} />
         )}
-        {page === "backtest" && <BacktestLab system={system} preset={preset} />}
+        {page === "backtest" && (
+          <BacktestLab system={system} preset={preset}
+            onInspectTrade={(p) => { setLabPreset({ ...p, nonce: Date.now() }); setPage("strategy"); }} />
+        )}
         {PLACEHOLDER[page] && (
           <div className="page">
             <div className="page-head">

@@ -24,6 +24,7 @@ from tradingos.marketdata.okx_public import OkxApiError, OkxPublicClient
 from tradingos.marketdata.store import CandleStore
 from tradingos.marketdata.validation import validate_candles
 from tradingos.risk.engine import RiskConfig
+from tradingos.services.audit_service import audit_run, inspect_signals
 from tradingos.services.backtest_service import BacktestInputError, run_and_store
 from tradingos.services.research_service import analyze_for_chart
 from tradingos.storage.runs import RunRepository
@@ -209,6 +210,19 @@ def create_app(
         except (BacktestInputError, KeyError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.post("/api/research/inspect")
+    def research_inspect(req: ResearchRequest) -> dict:
+        """Signal Inspector: how every candidate signal was evaluated (funnel + per-condition)."""
+        if req.strategy_version is None and req.draft_params is None:
+            raise HTTPException(400, "give strategy_version or draft_params")
+        try:
+            return inspect_signals(settings, configs, req.strategy_id, req.strategy_version, req.inst_id,
+                                   req.start_ts, req.end_ts, req.timeframe, req.draft_params)
+        except ConfigValidationError as exc:
+            raise HTTPException(422, {"message": "invalid draft parameters", "errors": exc.errors}) from exc
+        except (BacktestInputError, KeyError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     # ------------------------------------------------------------- instances
     @app.get("/api/instances")
     def list_instances() -> list[dict]:
@@ -265,6 +279,17 @@ def create_app(
         if run is None:
             raise HTTPException(404, "run not found")
         return run
+
+    @app.get("/api/backtests/{run_id}/audit")
+    def audit_backtest(run_id: str) -> dict:
+        """Per-trade look-ahead audit (evidence known-times + prefix replay). Read-only."""
+        run = repo.get(run_id)
+        if run is None:
+            raise HTTPException(404, "run not found")
+        try:
+            return audit_run(settings, run)
+        except (BacktestInputError, ConfigValidationError) as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.get("/api/backtests/{run_id}/trades.csv", response_class=PlainTextResponse)
     def export_trades(run_id: str) -> PlainTextResponse:

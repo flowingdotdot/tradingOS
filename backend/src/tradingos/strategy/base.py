@@ -20,11 +20,15 @@ import pandas as pd
 from pydantic import BaseModel, ValidationError
 
 from tradingos.domain.timeframes import Timeframe
+from tradingos.strategy.inspect import Inspection
 from tradingos.strategy.schema import (
     ConfigValidationError,
     StrategyDefinition,
     component_states,
+    describe_params,
+    unknown_param_paths,
     validate_components,
+    validate_dependencies,
 )
 from tradingos.strategy.view import ResearchView, add_signal_layers
 
@@ -89,14 +93,20 @@ class Strategy(ABC):
     def __init__(self, params: dict[str, Any] | None = None):
         if "definition" not in vars(type(self)) and not hasattr(type(self), "definition"):
             raise TypeError(f"{type(self).__name__} must declare `definition = StrategyDefinition(...)`")
+        specs = describe_params(self.Params)
+        unknown = unknown_param_paths(specs, params or {})
+        if unknown:
+            raise ConfigValidationError([{"path": u, "message": "unknown parameter (not defined by this strategy)"}
+                                         for u in unknown])
         try:
             self.params = self.Params(**(params or {}))
         except ValidationError as exc:
             raise ConfigValidationError(
                 [{"path": ".".join(str(x) for x in e["loc"]) or "params", "message": e["msg"]} for e in exc.errors()]
             ) from exc
-        errors = validate_components(self.definition.components, self.definition.component_rules,
-                                     self.params.model_dump()) + self.validate_config()
+        resolved = self.params.model_dump()
+        errors = (validate_components(self.definition.components, self.definition.component_rules, resolved)
+                  + validate_dependencies(specs, resolved) + self.validate_config())
         if errors:
             raise ConfigValidationError(errors)
 
@@ -112,6 +122,11 @@ class Strategy(ABC):
     @abstractmethod
     def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame:
         """bars: columns ts, open, high, low, close, volume (ascending, closed candles only)."""
+
+    def evaluate(self, bars: pd.DataFrame) -> tuple[pd.DataFrame, Inspection | None]:
+        """Signals plus an optional Signal Inspector record produced by the same evaluation.
+        Plugins that record their decision funnel override this (see strategy/inspect.py)."""
+        return self.generate_signals(bars), None
 
     def indicator_lines(self, bars: pd.DataFrame) -> list[tuple[str, str, np.ndarray, str]]:
         """Optional (id, label, values aligned to bars, color) series for the default research view."""

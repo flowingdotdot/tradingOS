@@ -172,6 +172,74 @@ def set_path(d: dict[str, Any], path: str, value: Any) -> None:
     cur[last] = value
 
 
+# ---------------------------------------------------------------- dependency validation
+# Enforced on the BACKEND for every path that builds a strategy (API validate/save, repo YAML,
+# research drafts, backtests, instances) — the UI greying a field out is only a convenience.
+def dependency_met(dep: dict[str, Any], params: dict[str, Any]) -> bool:
+    try:
+        v = get_path(params, dep["path"])
+    except KeyError:
+        return False
+    return v in dep["in"] if "in" in dep else v == dep.get("equals")
+
+
+def effective_dependencies(spec: ParamSpec, by_path: dict[str, ParamSpec]) -> list[dict[str, Any]]:
+    """Explicit `depends_on` plus the group convention: fields of a group that has an `enabled`
+    flag are only meaningful while that flag is true."""
+    deps = [spec.depends_on] if spec.depends_on else []
+    if spec.group:
+        flag = f"{spec.group}.enabled"
+        implicit = {"path": flag, "equals": True}
+        if flag in by_path and spec.path != flag and implicit not in deps:
+            deps.append(implicit)
+    return deps
+
+
+def validate_dependencies(specs: list[ParamSpec], params: dict[str, Any]) -> list[dict[str, str]]:
+    """A parameter whose dependency is NOT met has no effect on the strategy. Setting it to a
+    non-default value is rejected: such a configuration misrepresents what will actually run
+    (and would give two identical behaviours different hashes)."""
+    by_path = {s.path: s for s in specs}
+    errors: list[dict[str, str]] = []
+    for spec in specs:
+        if spec.kind == "group":
+            continue
+        for dep in effective_dependencies(spec, by_path):
+            if dep["path"] not in by_path:
+                errors.append({"path": spec.path, "message": f"depends on unknown parameter {dep['path']!r}"})
+                continue
+            if dependency_met(dep, params):
+                continue
+            value = get_path(params, spec.path)
+            if value != spec.default:
+                cond = f"in {dep['in']}" if "in" in dep else f"= {dep.get('equals')!r}"
+                errors.append({
+                    "path": spec.path,
+                    "message": f"has no effect unless {dep['path']} {cond} (currently "
+                               f"{get_path(params, dep['path'])!r}); leave it at its default {spec.default!r} "
+                               f"or change {dep['path']}",
+                })
+    return errors
+
+
+def unknown_param_paths(specs: list[ParamSpec], declared: dict[str, Any], prefix: str = "") -> list[str]:
+    """Keys present in a declared configuration that the schema does not define (typos would
+    otherwise be ignored silently and the default used instead)."""
+    known = {s.path: s for s in specs}
+    out: list[str] = []
+    for key, value in declared.items():
+        path = f"{prefix}{key}"
+        spec = known.get(path)
+        if spec is None:
+            out.append(path)
+        elif spec.kind == "group":
+            if isinstance(value, dict):
+                out += unknown_param_paths(specs, value, prefix=f"{path}.")
+            else:
+                out.append(path)
+    return out
+
+
 # ------------------------------------------------------------------------- components
 class ComponentSpec(BaseModel):
     """A building block of a strategy's logic (e.g. "FVG filter", "Trend filter").

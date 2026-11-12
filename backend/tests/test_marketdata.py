@@ -129,3 +129,19 @@ def test_transport_error_is_retried():
     with OkxPublicClient(transport=httpx.MockTransport(handler), sleep=lambda s: None) as c:
         df, _ = c.get_history_candles("BTC-USDT-SWAP", TF)
     assert df.empty and calls["n"] == 2
+
+
+def test_provenance_sidecar_records_source_coverage_and_fingerprint(tmp_path):
+    from tradingos.marketdata.store import read_provenance, write_provenance
+
+    store = CandleStore(tmp_path)
+    store.merge_save("X", TF, make_bars([(100, 101, 99, 100)] * 10).drop(index=[4]))
+    m = write_provenance(store, "X", TF, source="https://example/api", collector_revision="abc123")
+    assert m["rows"] == 9 and m["integrity"]["missing_bars"] == 1 and m["integrity"]["gaps"][0]["start_ts"] == T0 + 4 * TF.ms
+    assert m["fingerprint_sha256_ohlc"] == data_fingerprint(store.load("X", TF)) and m["first_ts"] == T0
+    store.merge_save("X", TF, make_bars([(100, 101, 99, 100)] * 10))           # the gap gets filled later
+    m2 = write_provenance(store, "X", TF, source="https://example/api", collector_revision="abc124")
+    assert m2["integrity"]["missing_bars"] == 0 and len(m2["history"]) == 2
+    assert m2["history"][0]["fingerprint"] != m2["history"][1]["fingerprint"]   # the change is traceable
+    assert read_provenance(store, "X", TF)["source"] == "https://example/api"
+    assert store.datasets() == [("X", TF)]                                      # sidecar is not a dataset

@@ -106,8 +106,23 @@ class MyStrategy(Strategy):
 | nullable | `float \| None` | "none" 체크 |
 | group | 중첩 `BaseModel` | 필드 묶음 (`<group>.enabled == false`면 묶음 비활성 표시) |
 
-`depends_on={"path": "...", "in": [...]}` 또는 `{"path": "...", "equals": v}` — 조건이 거짓이면 UI가 필드를 비활성화한다 (값은 무의미).
-검증 순서: pydantic(타입·범위) → 컴포넌트 규칙 → `validate_config`. 오류는 `[{path, message}]`로 통일 (`ConfigValidationError`).
+`depends_on={"path": "...", "in": [...]}` 또는 `{"path": "...", "equals": v}` — 조건이 거짓이면 그 파라미터는 전략에 영향을 주지 않는다.
+
+### 6.1 백엔드 검증 (UI와 무관하게 항상 적용)
+전략 객체를 만드는 모든 경로(`/validate`, 설정 저장, 연구 draft, 백테스트, 인스턴스, repo YAML 로딩)가 `Strategy.__init__`을 거치므로 UI를 우회한 API 요청도 같은 검증을 받는다.
+
+| 순서 | 검사 | 거부 예 |
+|---|---|---|
+| 1 | **알 수 없는 키** — 스키마에 없는 파라미터 이름 (오타가 조용히 무시되고 기본값으로 실행되는 것을 방지) | `fast_perod: 5` |
+| 2 | 타입·범위 (pydantic) | `swing.k_left: 0` |
+| 3 | 컴포넌트: 필수 컴포넌트 해제, `requires`, `component_rules` | FVG와 OTE 둘 다 OFF |
+| 4 | **의존성** — 의존 조건이 거짓인 파라미터가 기본값이 아니면 거부 ("효과 없는 값"이 설정에 남아 실제 실행 내용을 오해하게 하거나, 같은 동작에 다른 해시가 붙는 것을 방지) | `entry.mode: mss_close` 인데 `retest_expiry_bars: 30` |
+| 5 | 전략 고유 규칙 (`validate_config`) | `fast_period ≥ slow_period` |
+
+- 의존성에는 명시적 `depends_on`과 **그룹 규칙**이 모두 적용된다: 그룹에 `enabled` 필드가 있으면 그 그룹의 다른 필드는 `enabled = true`일 때만 의미가 있다.
+- UI는 의존 조건이 깨진 필드를 기본값으로 자동 복원한다 (편의 기능; 강제는 백엔드가 한다).
+- 잘못된 repo YAML 한 개는 그 버전만 `integrity: invalid`로 표시되고 다른 버전은 정상 동작한다.
+- 오류 형식은 `[{path, message}]`로 통일 (`ConfigValidationError`). 테스트: `tests/test_config_validation.py`.
 
 ## 7. 컴포넌트 (조건 ON/OFF)
 
@@ -128,6 +143,20 @@ ComponentRule(kind="at_least_one", components=["fvg_filter", "ote_filter"], mess
 - 모든 항목에 `known_ts`; 끝이 정해지지 않은 항목은 `t2=None` (cutoff까지 연장). 항목별 `tf` 제한 가능.
 - 색은 의미 토큰(`bear`, `bull`, `accent`, `warn`, `zone`, `ote`, `muted`, `*_fill` …) 또는 CSS 색.
 - 기본 구현: 캔들 + `indicator_lines` + 신호 마커 + SL/TP + 신호 표. 복잡한 전략은 `research_view`를 재정의 (ICT: `ict_ote_view.py`).
+
+## 8.1 Signal Inspector (`strategy/inspect.py`) — 선택 기능
+"왜 신호가 이것뿐인가"를 추적하기 위한 기록. 플러그인이 `evaluate(bars) -> (signals, Inspection)`을 재정의하면 활성화된다.
+
+- **반드시 실제 의사결정 코드 안에서 기록한다.** 신호를 별도로 재계산하는 진단 코드를 만들지 않는다 (ICT: `_impulses`, `_record`).
+- `StageDef(id, label, description, independent)` 목록 + 후보별 단계 상태:
+  `PASS` / `FAIL`(이유) / `NOT_APPLICABLE`(컴포넌트 OFF 또는 정의에 없음) / `NOT_EVALUATED`(앞 단계 실패로 평가 안 됨) / `PENDING`(데이터 종료 시 진행 중).
+- 집계 두 가지를 구분한다: **funnel**(순차 — 어느 단계에서 탈락하는가), **conditions**(독립 — 각 조건이 그 자체로 얼마나 엄격한가; `independent=True`인 단계만 무조건부 비율).
+- 신호가 된 후보는 `evidence`(입력별 발생 시각 `ts`와 인식 시각 `known_ts`)를 남긴다.
+- 사용처: `POST /api/research/inspect`, 백테스트 실행 기록의 `inspection`, Strategy Lab / Backtest Lab의 Inspector 패널.
+
+## 8.2 거래 감사 (`services/audit_service.py`) — 모든 전략 공통
+`GET /api/backtests/{id}/audit` / `tradingos audit --run <id>`: 저장된 실행의 파라미터 스냅샷으로 다시 평가해 거래마다
+① 신호 재현, ② **prefix replay**(신호 봉까지만 준 데이터로 같은 신호가 나오는가 — 모든 전략에 적용), ③ evidence의 인식 시각 ≤ 결정 시각을 검사한다.
 
 ## 9. 안전 규칙
 

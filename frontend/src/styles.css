@@ -189,3 +189,18 @@ pre.params { background: var(--panel-2); border: 1px solid var(--border); border
 .events { max-height: 160px; overflow: auto; color: var(--text-dim); font-size: 11px; }
 .disclaimer.draft { border-color: var(--warn); background: rgba(240,180,41,0.08); }
 .compare-diff { color: var(--warn); font-weight: 600; }
+
+/* Signal Inspector / trade audit */
+.grid-2.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 1300px) { .grid-2.even { grid-template-columns: 1fr; } }
+.st-pass { color: var(--up); }
+.st-fail { color: var(--down); font-weight: 700; }
+.st-na { color: var(--text-dim); }
+.st-ne { color: #46515e; }
+.st-pend { color: var(--warn); }
+table.matrix td.cell { text-align: center; font-family: ui-monospace, Consolas, monospace; padding: 4px 2px; }
+table.matrix th { font-size: 10.5px; }
+.cand-detail { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+.cand-detail td { white-space: normal; }
+tr.detail-row td { background: var(--panel-2); white-space: normal; }
+tr.detail-row { cursor: default; }

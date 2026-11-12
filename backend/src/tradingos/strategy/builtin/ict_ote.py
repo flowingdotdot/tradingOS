@@ -33,6 +33,7 @@ from tradingos.features.ote import DealingRange, intersect
 from tradingos.features.structure import structure_events, swing_sequence_bias
 from tradingos.features.swings import detect_swings
 from tradingos.strategy.base import Strategy, empty_signals
+from tradingos.strategy.inspect import FAIL, NA, NOT_EVALUATED, PASS, PENDING, Inspection, StageDef
 from tradingos.strategy.schema import (
     ComponentRule,
     ComponentSpec,
@@ -164,6 +165,18 @@ class Analysis:
     bias_on_base: np.ndarray
     setups: list[dict[str, Any]] = field(default_factory=list)
     signals: pd.DataFrame | None = None
+    inspection: Inspection | None = None
+
+
+def _end(c: dict[str, Any], outcome: str, decision_ts: int | None = None) -> None:
+    """Close an inspection candidate: record the outcome and the final entry decision."""
+    c["outcome"], c["decision_ts"] = outcome, decision_ts
+    if outcome == "signal":
+        Inspection.mark(c, "final_decision", PASS, reason="entry signal emitted")
+    elif outcome.startswith("pending"):
+        Inspection.mark(c, "final_decision", PENDING, reason="evaluation still open when the data ended")
+    else:
+        Inspection.mark(c, "final_decision", FAIL, reason=f"no entry: {outcome}")
 
 
 def _tf_features(bars: pd.DataFrame, tf: Timeframe, k_left: int, k_right: int, p: IctOteParams,
@@ -235,6 +248,44 @@ class IctOteStrategy(Strategy):
     def generate_signals(self, bars: pd.DataFrame) -> pd.DataFrame:
         return self.analyze(bars).signals  # type: ignore[return-value]
 
+    def evaluate(self, bars: pd.DataFrame):
+        a = self.analyze(bars)
+        return a.signals, a.inspection
+
+    def _stages(self) -> list[StageDef]:
+        p = self.params
+        itf, btf = p.impulse.timeframe, p.bias.timeframe
+        stages = [
+            StageDef("structure_break", f"{itf} market structure: bearish BOS/MSS",
+                     "Close below the most recently confirmed swing low (the candidate itself)"),
+            StageDef("displacement", f"{itf} displacement in the break leg",
+                     "At least one displacement candle between the leg high and the break bar"),
+            StageDef("impulse_confirmed", f"{itf} swing: impulse end B confirmed",
+                     "First swing low at/after the break confirmed (k right bars) and origin A not exceeded"),
+            StageDef("distinct_impulse", "Deduplication (one setup per impulse end)",
+                     "Consecutive breaks that resolve to the same swing low B are one impulse"),
+            StageDef("htf_bias", f"{btf} market bias bearish", "Bias as known when the impulse became known",
+                     independent=True),
+            StageDef("fvg_detection", f"{itf} FVG in the impulse leg",
+                     "At least one bearish FVG formed inside A..B that is not invalidated", independent=True),
+            StageDef("ote_intersection", "OTE x FVG entry zone", "At least one FVG overlaps the OTE band",
+                     independent=True),
+            StageDef("zone_touch", "Retracement reaches the entry zone",
+                     "5m high reaches a valid zone before invalidation, a new low below B, expiry or supersession"),
+            StageDef("entry_confirmation", "5m entry confirmation (bearish MSS)",
+                     "5m bearish MSS breaking an internal swing formed after B, with displacement if required"),
+            StageDef("htf_bias_at_trigger", f"{btf} bias still bearish at trigger"),
+        ]
+        if p.entry.mode == "fvg_retest":
+            stages.append(StageDef("retest_fvg", "5m FVG in the MSS leg (limit level)"))
+        stages += [
+            StageDef("reward_risk", f"Minimum planned reward/risk >= {p.target.min_rr}",
+                     "Target below and stop above the entry reference, RR at the signal bar close"),
+            StageDef("session_filter", "Session filter", "Not part of this strategy definition", independent=True),
+            StageDef("final_decision", "Final entry decision"),
+        ]
+        return stages
+
     def research_view(self, bars: pd.DataFrame, tf: Timeframe, start: int, end: int):
         """Custom view: structure overlays + setup tables (see ict_ote_view.py)."""
         from tradingos.strategy.builtin.ict_ote_view import build_ict_view
@@ -265,60 +316,109 @@ class IctOteStrategy(Strategy):
         if not p.bias.enabled:
             bias_on_base = np.full(len(bars), -1, dtype=np.int64)
 
-        a = Analysis(base=base, impulse=imp, bias=bias, bias_on_base=bias_on_base)
-        impulses = self._impulses(imp)
-        a.setups, a.signals = self._run_setups(bars, base_tf, base, imp, impulses, bias_on_base)
+        a = Analysis(base=base, impulse=imp, bias=bias, bias_on_base=bias_on_base,
+                     inspection=Inspection(self._stages()))
+        impulses = self._impulses(imp, a.inspection)
+        a.setups, a.signals = self._run_setups(bars, base_tf, base, imp, impulses, bias_on_base, a)
         return a
 
     # ----------------------------------------------------------------- impulses
-    def _impulses(self, imp: TfFeatures) -> list[dict[str, Any]]:
-        """Bearish impulses A->B on the impulse timeframe (docs §2.10)."""
+    def _impulses(self, imp: TfFeatures, insp: Inspection) -> list[dict[str, Any]]:
+        """Bearish impulses A->B on the impulse timeframe (docs 3.2). Every bearish structure
+        break is an inspection candidate; the reasons a break does not become an impulse are
+        recorded where they are decided."""
         p = self.params
         ev = imp.structure
         if ev.empty:
             return []
-        ev = ev[(ev["kind"].isin(p.impulse.break_kinds)) & (ev["direction"] == -1)]
-        if p.impulse.require_displacement and p.displacement.enabled:
-            ev = ev[ev["has_displacement"]]
+        ev = ev[(ev["kind"].isin(["BOS", "MSS"])) & (ev["direction"] == -1)]
+        need_disp = p.impulse.require_displacement and p.displacement.enabled
         lows = imp.swings[imp.swings["kind"] == "low"].sort_values("idx")
         h = imp.bars["high"].to_numpy()
+        c = imp.bars["close"].to_numpy()
         ts = imp.bars["ts"].to_numpy(dtype="int64")
         low_idx = lows["idx"].to_numpy()
         by_b: dict[int, dict[str, Any]] = {}
+        mark = insp.mark
         for e in ev.itertuples():
+            cd = insp.candidate(int(e.ts), int(e.known_ts), f"{e.kind} down {imp.tf.value}", break_kind=e.kind,
+                                ref_price=float(e.ref_price), break_close=float(c[e.idx]))
+            mark(cd, "session_filter", NA, reason="not part of ict_bearish_ote")
+            if e.kind not in p.impulse.break_kinds:
+                mark(cd, "structure_break", FAIL, value={"kind": e.kind},
+                     reason=f"break_kind_not_allowed: {e.kind} not in impulse.break_kinds")
+                _end(cd, "break_kind_not_allowed", int(e.known_ts))
+                continue
+            mark(cd, "structure_break", PASS,
+                 value={"kind": e.kind, "broken_swing_low": float(e.ref_price), "close": float(c[e.idx]),
+                        "prior_trend": int(e.prior_trend)})
+            if not need_disp:
+                mark(cd, "displacement", NA, reason="displacement not required")
+            elif e.has_displacement:
+                mark(cd, "displacement", PASS)
+            else:
+                mark(cd, "displacement", FAIL, reason="no_displacement: no displacement candle in the break leg")
+                _end(cd, "no_displacement", int(e.known_ts))
+                continue
             k = np.searchsorted(low_idx, e.idx, side="left")
-            if k >= len(lows):
-                continue  # impulse end not formed / not confirmed within data
-            b = lows.iloc[k]
             a_idx, a_px = int(e.leg_extreme_idx), float(e.leg_extreme_price)
+            if k >= len(lows):
+                # impulse end not formed / not confirmed within data
+                mark(cd, "impulse_confirmed", PENDING, value={"a": a_px},
+                     reason="no confirmed swing low after the break within the data")
+                _end(cd, "pending_impulse")
+                continue
+            b = lows.iloc[k]
             if np.max(h[a_idx + 1 : int(b.known_idx) + 1], initial=-np.inf) > a_px:
-                continue  # price exceeded the impulse origin before the impulse completed
+                # price exceeded the impulse origin before the impulse completed
+                mark(cd, "impulse_confirmed", FAIL, value={"a": a_px, "b": float(b.price)},
+                     reason="origin_exceeded: price traded above A before B was confirmed")
+                _end(cd, "origin_exceeded", int(b.known_ts))
+                continue
+            mark(cd, "impulse_confirmed", PASS,
+                 value={"a": a_px, "b": float(b.price), "b_ts": int(b.ts), "b_known_ts": int(b.known_ts)})
             cand = {
                 "break_idx": int(e.idx), "break_ts": int(e.ts), "break_kind": e.kind,
                 "a_idx": a_idx, "a_ts": int(ts[a_idx]), "a": a_px,
                 "b_idx": int(b.idx), "b_ts": int(b.ts), "b": float(b.price),
                 "b_known_idx": int(b.known_idx), "known_ts": int(b.known_ts),
+                "cid": cd["id"], "ref_ts": int(e.ref_ts), "ref_known_ts": int(e.ref_known_ts),
+                "ref_price": float(e.ref_price),
             }
             prev = by_b.get(cand["b_idx"])
             # Consecutive breaks resolving to the same impulse end: keep the highest origin A.
             if prev is None or cand["a"] > prev["a"]:
                 by_b[cand["b_idx"]] = cand
+                loser, winner = prev, cand
+            else:
+                loser, winner = cand, prev
+            if loser is not None:
+                lc = insp.candidates[loser["cid"]]
+                mark(lc, "distinct_impulse", FAIL,
+                     reason=f"duplicate: same impulse end B as candidate #{winner['cid']} (kept: higher origin A)")
+                _end(lc, "duplicate", loser["known_ts"])
+        for cand in by_b.values():
+            mark(insp.candidates[cand["cid"]], "distinct_impulse", PASS)
         return sorted(by_b.values(), key=lambda x: (x["known_ts"], x["b_idx"]))
 
-    def _zones(self, imp: TfFeatures, im: dict[str, Any]) -> tuple[list[dict[str, Any]], tuple[float, float]]:
+    def _zones(self, imp: TfFeatures, im: dict[str, Any]
+               ) -> tuple[list[dict[str, Any]], tuple[float, float], dict[str, int]]:
         p = self.params
         dr = DealingRange(im["a"], im["b"])
         ote = dr.ote(p.ote.low, p.ote.high)
         zones: list[dict[str, Any]] = []
+        stats = {"fvg_in_leg": 0, "fvg_valid": 0}
         if p.fvg.enabled:
             f = imp.fvgs
             if not f.empty:
                 f = f[(f["direction"] == -1) & (f["first_idx"] >= im["a_idx"]) & (f["known_idx"] <= im["b_idx"])]
                 ts = imp.bars["ts"].to_numpy(dtype="int64")
                 for r in f.itertuples():
+                    stats["fvg_in_leg"] += 1
                     inval_known = int(ts[r.invalidated_idx] + imp.tf.ms) if r.invalidated_idx >= 0 else None
                     if inval_known is not None and inval_known <= im["known_ts"]:
                         continue  # already invalidated when the impulse became known
+                    stats["fvg_valid"] += 1
                     zone = intersect((r.bottom, r.top), ote) if p.ote.enabled else (r.bottom, r.top)
                     if zone is not None:
                         zones.append({"bottom": zone[0], "top": zone[1], "fvg_ts": int(r.ts),
@@ -327,11 +427,12 @@ class IctOteStrategy(Strategy):
         else:
             zones.append({"bottom": ote[0], "top": ote[1], "fvg_ts": None, "fvg_bottom": None, "fvg_top": None,
                           "fvg_known_ts": None, "inval_known_ts": None})
-        return zones, ote
+        return zones, ote, stats
 
     # -------------------------------------------------------------- state machine
     def _run_setups(self, bars: pd.DataFrame, base_tf: Timeframe, base: TfFeatures, imp: TfFeatures,
-                    impulses: list[dict[str, Any]], bias5: np.ndarray) -> tuple[list[dict], pd.DataFrame]:
+                    impulses: list[dict[str, Any]], bias5: np.ndarray, a: Analysis
+                    ) -> tuple[list[dict], pd.DataFrame]:
         p = self.params
         n = len(bars)
         sig = empty_signals(bars.index)
@@ -352,9 +453,12 @@ class IctOteStrategy(Strategy):
         active: dict[str, Any] | None = None
         next_imp = 0
 
-        def close_setup(s: dict[str, Any], status: str, j: int) -> None:
+        def close_setup(s: dict[str, Any], status: str, j: int, reason: str = "") -> None:
             s["status"] = status
             s["end_ts"] = int(ts[j] + base_tf.ms)
+            if reason:
+                s["reason"] = reason
+            self._record(a, s)
 
         for j in range(n):
             t_close = int(ts[j] + base_tf.ms)
@@ -362,16 +466,17 @@ class IctOteStrategy(Strategy):
             if s is not None and ts[j] >= s["known_ts"]:
                 done = self._step(s, j, ts, o, h, l, c, base_tf, mss_at, fvg5, bias5, buf, sig, warm, n)
                 if done:
+                    self._record(a, s)
                     active = None
             # Activate impulses that became known at this bar's close (they watch from j+1).
             while next_imp < len(impulses) and impulses[next_imp]["known_ts"] <= t_close:
                 im = impulses[next_imp]
                 next_imp += 1
                 rec = self._new_setup(im, imp, bars, ts, l, base_tf, len(setups))
+                rec["bias_at_known"] = int(bias5[j])
                 setups.append(rec)
                 if active is not None:
-                    close_setup(active, "superseded", j)
-                    active["reason"] = f"newer impulse #{rec['id']} became known"
+                    close_setup(active, "superseded", j, f"newer impulse #{rec['id']} became known")
                     active = None
                 if bias5[j] != -1:
                     close_setup(rec, "bias_not_bearish", j)
@@ -381,12 +486,13 @@ class IctOteStrategy(Strategy):
                     active = rec
         if active is not None:
             active["status"] = "open_at_end"
+            self._record(a, active)
         return setups, sig
 
     def _new_setup(self, im: dict, imp: TfFeatures, bars: pd.DataFrame, ts: np.ndarray, l: np.ndarray,
                    base_tf: Timeframe, sid: int) -> dict[str, Any]:
         p = self.params
-        zones, ote = self._zones(imp, im)
+        zones, ote, zstats = self._zones(imp, im)
         dr = DealingRange(im["a"], im["b"])
         # Base-TF bar that printed the impulse low (inside the impulse-TF B bar).
         b_start = int(np.searchsorted(ts, im["b_ts"], side="left"))
@@ -401,6 +507,10 @@ class IctOteStrategy(Strategy):
             "trigger_ts": None, "trigger_known_ts": None, "mss_ref_ts": None, "mss_ref_price": None,
             "mode": p.entry.mode, "entry_ref": None, "stop": None, "target": None, "rr": None,
             "limit_price": None, "retest_fvg_ts": None, "retest_outcome": None, "end_ts": None,
+            # inspector bookkeeping (never read by the decision logic)
+            "n_fvg_leg": zstats["fvg_in_leg"], "n_fvg_valid": zstats["fvg_valid"], "bias_at_known": None,
+            "bias_at_trigger": None, "mss_ref_known_ts": None, "retest_fvg_known_ts": None,
+            "mss_skipped_old_ref": 0, "mss_skipped_no_displacement": 0,
         }
 
     def _step(self, s: dict, j: int, ts, o, h, l, c, base_tf: Timeframe, mss_at: dict, fvg5: pd.DataFrame,
@@ -440,12 +550,18 @@ class IctOteStrategy(Strategy):
 
         if p.entry.trigger == "mss":
             e = mss_at.get(j)
-            if e is None or e.ref_ts < s["b5_ts"]:
+            if e is None:
+                return False
+            if e.ref_ts < s["b5_ts"]:
+                s["mss_skipped_old_ref"] += 1
                 return False  # MSS must break an internal swing formed after the impulse low
             if p.entry.require_displacement_in_mss and p.displacement.enabled and not e.has_displacement:
+                s["mss_skipped_no_displacement"] += 1
                 return False
             s["mss_ref_ts"], s["mss_ref_price"] = int(e.ref_ts), float(e.ref_price)
+            s["mss_ref_known_ts"] = int(e.ref_known_ts)
         s["trigger_ts"], s["trigger_known_ts"] = int(ts[j]), t_close
+        s["bias_at_trigger"] = int(bias5[j])
 
         if p.bias.enabled and p.bias.recheck_at_trigger and bias5[j] != -1:
             return finish("bias_lost", "4H bias no longer bearish at trigger")
@@ -462,6 +578,7 @@ class IctOteStrategy(Strategy):
             r = cand.sort_values(["known_idx", "bottom"], ascending=[False, True]).iloc[0]
             entry_ref = float(r["bottom"])
             s["limit_price"], s["retest_fvg_ts"] = entry_ref, int(r["ts"])
+            s["retest_fvg_known_ts"] = int(r["known_ts"])
         s["entry_ref"], s["stop"], s["target"] = entry_ref, stop, target
 
         if not target < entry_ref:
@@ -489,6 +606,136 @@ class IctOteStrategy(Strategy):
             sig.loc[j, "limit_expiry_bars"] = p.entry.retest_expiry_bars
             s["retest_outcome"] = self._hypothetical_retest(j, h, l, entry_ref, stop, target, ts)
         return finish("signal")
+
+    def _record(self, a: Analysis, s: dict[str, Any]) -> None:
+        """Write the finished setup's evaluation into the inspection (called exactly where the
+        state machine closes a setup). Uses only values the decision logic stored on the setup."""
+        p = self.params
+        insp = a.inspection
+        assert insp is not None
+        c = insp.candidates[s["cid"]]
+        mark = insp.mark
+        st = s["status"]
+        c["info"].update(setup_id=s["id"], a=s["a"], b=s["b"], impulse_known_ts=s["known_ts"])
+        pending = st == "open_at_end"
+
+        # --- independent conditions, all known when the impulse became known
+        if not p.bias.enabled:
+            mark(c, "htf_bias", NA, reason="bias filter disabled")
+        else:
+            ok = s["bias_at_known"] == -1
+            mark(c, "htf_bias", PASS if ok else FAIL,
+                 value={"bias": s["bias_at_known"], "timeframe": p.bias.timeframe, "mode": p.bias.mode},
+                 reason="" if ok else ("bias_bullish: " if s["bias_at_known"] == 1 else "bias_neutral: ")
+                 + f"{p.bias.timeframe} bias = {s['bias_at_known']} (needs -1)")
+        fvg_ok = True
+        if not p.fvg.enabled:
+            mark(c, "fvg_detection", NA, reason="FVG zone disabled")
+        else:
+            fvg_ok = s["n_fvg_valid"] > 0
+            reason = "" if fvg_ok else (
+                "no_fvg: no bearish FVG formed inside the impulse leg" if s["n_fvg_leg"] == 0
+                else f"fvg_invalidated: all {s['n_fvg_leg']} leg FVG(s) invalidated before the impulse was known")
+            mark(c, "fvg_detection", PASS if fvg_ok else FAIL,
+                 value={"fvg_in_leg": s["n_fvg_leg"], "fvg_valid": s["n_fvg_valid"]}, reason=reason)
+        ote_val = {"ote_low": s["ote_low"], "ote_high": s["ote_high"], "zones": len(s["zones"])}
+        if not p.ote.enabled:
+            mark(c, "ote_intersection", NA, reason="OTE zone disabled")
+        elif not fvg_ok:
+            mark(c, "ote_intersection", NOT_EVALUATED, value=ote_val, reason="no valid FVG to intersect with")
+        elif s["zones"]:
+            mark(c, "ote_intersection", PASS, value=ote_val)
+        else:
+            mark(c, "ote_intersection", FAIL, value=ote_val,
+                 reason=f"no_intersection: none of {s['n_fvg_valid']} valid FVG(s) overlaps the OTE band")
+        if st in ("bias_not_bearish", "no_zone"):
+            return _end(c, st, s["known_ts"])
+
+        # --- sequential path
+        if s["touch_idx"] is None:
+            if pending:
+                mark(c, "zone_touch", PENDING, reason="waiting for the retracement when the data ended")
+                return _end(c, "pending_touch")
+            mark(c, "zone_touch", FAIL, value={"retracement_high": s["retr_high"]},
+                 reason=f"{st}: {s['reason'] or 'zone not reached in time'}")
+            return _end(c, st, s["end_ts"])
+        mark(c, "zone_touch", PASS, value={"touched_ts": s["touched_ts"]})
+
+        if s["trigger_ts"] is None:
+            skipped = {"mss_breaking_swing_older_than_B": s["mss_skipped_old_ref"],
+                       "mss_without_displacement": s["mss_skipped_no_displacement"]}
+            if pending:
+                mark(c, "entry_confirmation", PENDING, value=skipped, reason="waiting for the 5m MSS")
+                return _end(c, "pending_confirmation")
+            mark(c, "entry_confirmation", FAIL, value=skipped,
+                 reason=f"{st}: {s['reason'] or 'no qualifying 5m bearish MSS after the touch'}")
+            return _end(c, st, s["end_ts"])
+        decision = s["trigger_known_ts"]
+        if p.entry.trigger == "mss":
+            mark(c, "entry_confirmation", PASS,
+                 value={"mss_ts": s["trigger_ts"], "broken_swing_low": s["mss_ref_price"], "swing_ts": s["mss_ref_ts"]})
+        else:
+            mark(c, "entry_confirmation", NA, reason="trigger = touch (no MSS confirmation)")
+
+        if not (p.bias.enabled and p.bias.recheck_at_trigger):
+            mark(c, "htf_bias_at_trigger", NA, reason="bias re-check disabled")
+        elif st == "bias_lost":
+            mark(c, "htf_bias_at_trigger", FAIL, value={"bias": s["bias_at_trigger"]},
+                 reason=f"bias_lost: {p.bias.timeframe} bias = {s['bias_at_trigger']} at trigger")
+            return _end(c, st, decision)
+        else:
+            mark(c, "htf_bias_at_trigger", PASS, value={"bias": s["bias_at_trigger"]})
+
+        if p.entry.mode == "fvg_retest":
+            if st == "no_retest_fvg":
+                mark(c, "retest_fvg", FAIL, reason=f"no_retest_fvg: {s['reason']}")
+                return _end(c, st, decision)
+            mark(c, "retest_fvg", PASS, value={"limit_price": s["limit_price"], "fvg_ts": s["retest_fvg_ts"]})
+
+        rr_val = {"entry_ref": s["entry_ref"], "stop": s["stop"], "target": s["target"], "rr": s["rr"],
+                  "min_rr": p.target.min_rr}
+        if st in ("rejected_target", "rejected_stop", "rejected_rr"):
+            mark(c, "reward_risk", FAIL, value=rr_val, reason=f"{st}: {s['reason']}")
+            return _end(c, st, decision)
+        mark(c, "reward_risk", PASS, value=rr_val)
+        if st == "signal":
+            self._evidence(a, s, c)
+        return _end(c, st, decision)
+
+    def _evidence(self, a: Analysis, s: dict[str, Any], c: dict[str, Any]) -> None:
+        """Inputs of a signal with occurrence vs. recognition time (for the look-ahead audit)."""
+        p = self.params
+        ev = Inspection.evidence
+        itf, btf, ltf = a.impulse.tf, a.bias.tf, a.base.tf
+        decision = s["trigger_known_ts"]
+        ev(c, f"{itf.value} swing low broken by the {s['break_kind']}", itf.value, s["ref_ts"], s["ref_known_ts"],
+           price=s["ref_price"], kind="swing")
+        ev(c, f"{itf.value} break bar ({s['break_kind']})", itf.value, s["break_ts"], s["break_ts"] + itf.ms, kind="bar")
+        ev(c, "impulse origin A (leg high bar)", itf.value, s["a_ts"], s["a_ts"] + itf.ms, price=s["a"], kind="bar")
+        ev(c, "impulse end B (swing low)", itf.value, s["b_ts"], s["known_ts"], price=s["b"], kind="swing")
+        for z in s["zones"]:
+            if z["fvg_ts"] is not None:
+                ev(c, f"{itf.value} bearish FVG (entry zone)", itf.value, z["fvg_ts"], z["fvg_known_ts"],
+                   bottom=z["fvg_bottom"], top=z["fvg_top"], kind="fvg")
+        if p.bias.enabled:
+            last_bar = decision // btf.ms * btf.ms - btf.ms
+            ev(c, f"last closed {btf.value} bar used for the bias", btf.value, last_bar, last_bar + btf.ms, kind="bar")
+            sw = a.bias.swings
+            if p.bias.mode == "swing_sequence" and not sw.empty:
+                known = sw[sw["known_ts"] <= decision]
+                for kind in ("high", "low"):
+                    for r in known[known["kind"] == kind].sort_values("known_idx").tail(2).itertuples():
+                        ev(c, f"{btf.value} swing {kind} (bias)", btf.value, int(r.ts), int(r.known_ts),
+                           price=float(r.price), kind="swing")
+        ev(c, "zone touch bar", ltf.value, s["touched_ts"], s["touched_ts"] + ltf.ms, kind="bar")
+        if s["mss_ref_ts"] is not None:
+            ev(c, "5m internal swing low broken by the MSS", ltf.value, s["mss_ref_ts"], s["mss_ref_known_ts"],
+               price=s["mss_ref_price"], kind="swing")
+        if s["retest_fvg_ts"] is not None:
+            ev(c, "5m FVG of the MSS leg (limit level)", ltf.value, s["retest_fvg_ts"], s["retest_fvg_known_ts"],
+               kind="fvg")
+        ev(c, "signal bar (5m MSS close)" if p.entry.trigger == "mss" else "signal bar (touch)", ltf.value,
+           s["trigger_ts"], decision, kind="bar")
 
     def _hypothetical_retest(self, j, h, l, limit, stop, target, ts) -> dict[str, Any]:
         """RESEARCH VIEW ONLY (uses bars after j): would the retest limit have filled?"""

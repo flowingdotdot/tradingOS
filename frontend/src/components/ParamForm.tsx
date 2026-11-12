@@ -13,6 +13,26 @@ export function setPath(obj: Params, path: string, value: unknown): Params {
   return { ...obj, [head]: setPath((obj[head] as Params) ?? {}, rest.join("."), value) };
 }
 
+/** After a change, reset every parameter whose dependency is no longer met to its default.
+ *  The backend rejects inert non-default values, so the form keeps the configuration valid
+ *  (and the reset is visible: the field shows its default and loses the "changed" tag). */
+export function resetInert(specs: ParamSpec[], values: Params): Params {
+  let out = values;
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = false;
+    for (const s of specs) {
+      if (s.kind === "group") continue;
+      const inert = !dependencyMet(s, out) || groupDisabled(s, out);
+      if (inert && JSON.stringify(getPath(out, s.path)) !== JSON.stringify(s.default)) {
+        out = setPath(out, s.path, s.default);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return out;
+}
+
 function dependencyMet(spec: ParamSpec, values: Params): boolean {
   const d = spec.depends_on;
   if (!d) return true;

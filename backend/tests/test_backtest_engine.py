@@ -170,3 +170,40 @@ def test_deterministic_on_random_data():
     # accounting identity: final equity = initial + sum of net PnL
     assert a.equity["equity"].iloc[-1] == pytest.approx(10_000 + sum(t.net_pnl for t in a.trades))
     assert len(bars) == a.bars and TF.ms == 900_000
+
+
+# ------------------------------------------------------------------ engine 0.2.0 fixes
+def test_entry_rejected_when_target_already_passed_at_fill():
+    # short signal with target 99; next bar opens at 98 (below the target) -> the idea is void
+    bars = make_bars([FLAT, (98, 98.5, 97, 98), FLAT, FLAT])
+    sig = signals_for(bars, {0: (-1, 110.0, 99.0)})
+    res = run_backtest(bars, sig, zero_cost_config(bars), BTC_USDT_SWAP)
+    assert res.trades == []
+    assert [r.reason for r in res.rejections] == ["target_passed_at_fill"]
+
+
+def test_stale_signal_is_not_executed_across_a_data_gap():
+    bars = make_bars([FLAT] * 6)
+    bars.loc[3:, "ts"] += 4 * TF.ms                      # 4 candles missing after bar 2
+    sig = signals_for(bars, {2: (1, 90.0, None), 4: (1, 90.0, None)})
+    res = run_backtest(bars, sig, zero_cost_config(bars), BTC_USDT_SWAP)
+    assert [r.reason for r in res.rejections] == ["stale_signal_data_gap"]
+    assert len(res.trades) == 1 and res.trades[0].entry_ts == bars["ts"][5]   # the contiguous one still fills
+
+
+def test_stop_inside_the_slippage_band_is_rejected():
+    # short: open 100, fill 99.9 (10 bps slippage), stop 99.95 sits between fill and open
+    bars = make_bars([FLAT, FLAT, FLAT])
+    costs = CostModel(taker_fee_rate=0, maker_fee_rate=0, slippage_bps=10, funding_rate_per_8h=0)
+    sig = signals_for(bars, {0: (-1, 99.95, None)})
+    res = run_backtest(bars, sig, zero_cost_config(bars, costs=costs), BTC_USDT_SWAP)
+    assert res.trades == [] and res.rejections[0].reason == "stop_on_wrong_side"
+
+
+def test_position_is_still_exited_by_signal_across_a_data_gap():
+    # exits are protective: a pending exit IS executed at the first available open after a gap
+    bars = make_bars([FLAT] * 6)
+    bars.loc[3:, "ts"] += 4 * TF.ms
+    sig = signals_for(bars, {0: (1, 90.0, None)}, exits_long=[2])
+    res = run_backtest(bars, sig, zero_cost_config(bars), BTC_USDT_SWAP)
+    assert res.trades[0].exit_reason == "signal_exit" and res.trades[0].exit_ts == bars["ts"][3]

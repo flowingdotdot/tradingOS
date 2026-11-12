@@ -55,6 +55,7 @@ def inspect_signals(settings: Settings, configs: ConfigStore, strategy_id: str, 
     if bars.empty:
         raise BacktestInputError(f"no stored {tf.value} candles for {inst_id} — collect data first")
     _, insp = strategy.evaluate(bars)
+    start_ts = data_ctx["trade_start_ts"]      # may be later than requested (warm-up inside the window)
     base = {
         "strategy_id": strategy_id, "strategy_version": cfg.version, "draft": draft_params is not None,
         "definition_version": cls.definition.definition_version, "params_hash": cfg.params_hash,

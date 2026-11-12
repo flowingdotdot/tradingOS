@@ -88,7 +88,8 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
         raise BacktestInputError(str(exc)) from exc
     if bars.empty:
         raise BacktestInputError("no stored candles for this instrument/timeframe/period — collect data first")
-    test_mask = (bars["ts"] >= config.start_ts).to_numpy()
+    trade_start = data_ctx["trade_start_ts"]
+    test_mask = (bars["ts"] >= trade_start).to_numpy()
     if test_mask.sum() < 2:
         raise BacktestInputError("not enough candles inside the test period")
 
@@ -123,6 +124,11 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
     if dq.get("flagged_short_bars"):
         notes.append(f"{dq['flagged_short_bars']} zero-volume bar(s) in short runs kept but flagged.")
     notes.append("Funding is an ASSUMED fixed rate, not measured data (OKX serves ~3 months of history).")
+    if data_ctx["warmup_clamped_to_oos_end"]:
+        notes.append(
+            "Warm-up could not use the sealed OOS window: indicators were warmed up inside the requested "
+            f"period and trading starts at {datetime.fromtimestamp(trade_start / 1000, UTC):%Y-%m-%d %H:%M} UTC."
+        )
 
     result = run_backtest(bars_t, signals_t, config, instrument)
     metrics = compute_metrics(result)
@@ -146,6 +152,7 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
     }
     summary = {k: metrics[k] for k in ("total_trades", "net_profit", "return_pct", "win_rate_pct",
                                        "profit_factor", "max_drawdown_pct", "expectancy_r")}
+    summary.update(segment=data_ctx["segment"], experiment_id=config.experiment_id)
     definition = strategy.definition
     payload = {
         "config": config.model_dump(),
@@ -163,6 +170,7 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
             "components": strategy.component_states(),
         },
         "segment": data_ctx["segment"],
+        "experiment_id": config.experiment_id,
         "research_split": data_ctx["research_split"],
         "oos_unsealed_run": data_ctx["oos_unsealed_run"],
         "execution_model": {
@@ -184,6 +192,7 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
         "data_quality_rules": dq,
         "conditions": {
             "inst_id": config.inst_id, "timeframe": tf.value, "start_ts": config.start_ts, "end_ts": config.end_ts,
+            "effective_start_ts": trade_start, "warmup_data_segment": data_ctx["warmup_data_segment"],
             "initial_capital": config.initial_capital, "costs": config.costs.model_dump(),
             "risk": config.risk.model_dump(), "execution": config.execution.model_dump(),
             # test-window data (what results are compared on) vs. full input incl. strategy warm-up
@@ -195,7 +204,7 @@ def run_and_store(config: BacktestConfig, settings: Settings, repo: RunRepositor
         "trades": [t.model_dump() for t in result.trades],
         "rejections": [r.model_dump() for r in result.rejections],
         "equity": _equity_for_storage(result.equity),
-        "inspection": (inspection.summarize(config.start_ts, config.end_ts, compact=True)
+        "inspection": (inspection.summarize(trade_start, config.end_ts, compact=True)
                        if inspection is not None else None),
         "data_quality": quality.to_dict(),
         "notes": notes,

@@ -36,12 +36,12 @@ def funding_sensitivity(settings: Settings, config: BacktestConfig, params: dict
     tf = Timeframe(config.timeframe)
     strategy = build_strategy(config.strategy_id, params)
     try:
-        bars, _ = load_strategy_bars(settings, config.inst_id, tf, config.start_ts, config.end_ts,
-                                     strategy.warmup_bars(), "funding sensitivity")
+        bars, ctx = load_strategy_bars(settings, config.inst_id, tf, config.start_ts, config.end_ts,
+                                       strategy.warmup_bars(), "funding sensitivity")
     except PeriodNotAllowedError as exc:
         raise BacktestInputError(str(exc)) from exc
     signals, _ = strategy.evaluate(bars)
-    mask = (bars["ts"] >= config.start_ts).to_numpy()
+    mask = (bars["ts"] >= ctx["trade_start_ts"]).to_numpy()
     signals.loc[~mask, "entry"] = 0
     signals.loc[~mask, ["exit_long", "exit_short"]] = False
     first = int(mask.argmax())

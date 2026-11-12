@@ -72,6 +72,7 @@ def analyze_for_chart(settings: Settings, configs: ConfigStore, strategy_id: str
         "end_ts": end_ts,
         "warmup_from_ts": int(bars["ts"].iloc[0]),
         "segment": data_ctx["segment"],
+        "signals_valid_from_ts": data_ctx["trade_start_ts"],
         "data_quality_rules": data_ctx["quality"],
         "view": view.to_dict(),
     }

@@ -51,6 +51,9 @@ class BacktestConfig(BaseModel):
     # Refuse to run when the stored history before start_ts is shorter than the strategy's
     # warm-up (default). False = run anyway; early signals are suppressed and a note is recorded.
     require_full_warmup: bool = True
+    # Research bookkeeping: which registered experiment (docs/EXPERIMENT_LOG.md) this run belongs
+    # to. Every run on the in-sample window counts as a trial of its experiment.
+    experiment_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
     costs: CostModel = CostModel()
     risk: RiskConfig = RiskConfig()
     execution: ExecutionModel = ExecutionModel()

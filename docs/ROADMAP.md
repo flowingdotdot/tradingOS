@@ -91,3 +91,9 @@
 - [ ] §8 결정 사항 합의 (라이선스 데이터 출처, 기준 통화, LLM 사용 범위)
 - [ ] B1 FRED/ALFRED point-in-time 데이터 → B2 대시보드 → B3 시나리오/랭킹 → B4 배분 시뮬레이션 → B5 추천 기록 → B6 AI 어시스턴트(선택)
 - 권장 시점: Track A Phase 3 이후 병행
+
+## ICT v1 실패 원인 분석 (2026-11-12)
+- [x] OOS 격리 보완: 봉인된 OOS 봉은 워밍업으로도 읽지 않음 (관찰 구간은 내부에서 워밍업 후 거래)
+- [x] [ICT_FAILURE_ANALYSIS.md](ICT_FAILURE_ANALYSIS.md): MSS 확인 지연, 4H 바이어스, 임펄스/FVG, 구현 점검, 가설 3개
+- [x] 거래별 차트 [analysis/ict_v1_is_trades.html](analysis/ict_v1_is_trades.html), 실험 기록 [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md) + `experiment_id`, `tradingos trials`
+- [ ] **사용자 결정 대기**: 가설 H1~H3 중 무엇을 어떤 순서로 검증할지 (v1은 고정·보존, OOS 봉인 유지)

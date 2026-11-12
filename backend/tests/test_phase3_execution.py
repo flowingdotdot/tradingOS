@@ -400,3 +400,70 @@ def test_quality_rule_is_recorded_with_the_run(tmp_path):
     assert em["engine_version"] == "0.3.0" and em["funding"]["basis"].startswith("ASSUMED")
     assert "cost-inclusive" in em["sizing"] and "margin / liquidation" in em["not_modelled"]
     assert run["conditions"]["execution"]["limit_fill_penetration_bps"] == 1.0
+
+
+# ================================================= OOS isolation: no sealed bar as warm-up
+def test_observed_window_never_reads_sealed_oos_bars_even_for_warmup(tmp_path):
+    """Data exists on both sides of the OOS end. A run starting at the first observed bar must
+    warm up INSIDE the observed window and may only trade after that."""
+    from tradingos.services.data_access import load_strategy_bars
+
+    n_before, n_after = 400, 1_200
+    bars = synth.to_frame(synth.legs(100, [(104, 1), (100, 1)] * 200), M5, t0=OOS_END - n_before * M5.ms)
+    assert len(bars) == n_before + n_after
+    CandleStore(tmp_path / "market").merge_save("BTC-USDT-SWAP", M5, bars)
+    settings = Settings(data_dir=tmp_path, strategy_config_dir=BACKEND_DIR / "config" / "strategies")
+    end = int(bars["ts"].iloc[-1]) + M5.ms
+
+    loaded, ctx = load_strategy_bars(settings, "BTC-USDT-SWAP", M5, OOS_END, end, 90, "test")
+    assert int(loaded["ts"].iloc[0]) == OOS_END                       # nothing from the sealed window
+    assert ctx["warmup_clamped_to_oos_end"] and ctx["trade_start_ts"] == OOS_END + 90 * M5.ms
+    assert ctx["segment"] == "OBSERVED" and ctx["warmup_data_segment"] == "OBSERVED"
+
+    # far enough inside the observed window the normal warm-up applies, still without OOS bars
+    later = OOS_END + 200 * M5.ms
+    loaded, ctx = load_strategy_bars(settings, "BTC-USDT-SWAP", M5, later, end, 90, "test")
+    assert int(loaded["ts"].iloc[0]) == later - 90 * M5.ms >= OOS_END and not ctx["warmup_clamped_to_oos_end"]
+    assert ctx["trade_start_ts"] == later
+
+    run = run_and_store(BacktestConfig(strategy_id="ma_crossover", strategy_version="v1", timeframe="5m",
+                                       start_ts=OOS_END, end_ts=end), settings, RunRepository(settings.db_path))
+    eff = run["conditions"]["effective_start_ts"]
+    assert eff == OOS_END + 90 * M5.ms                                 # ma_crossover v1 warm-up = 90 bars
+    assert run["equity"]["ts"][0] == eff and all(t["entry_ts"] > eff for t in run["trades"])
+    assert run["conditions"]["warmup_data_segment"] == "OBSERVED"
+    assert any("sealed OOS window" in n for n in run["notes"])
+    # the same strategy given the sealed bars as warm-up would have produced different early signals:
+    # prove the bars really were excluded by comparing fingerprints of what was loaded
+    from tradingos.marketdata.store import data_fingerprint
+
+    assert run["conditions"]["input_fingerprint"] == data_fingerprint(bars[bars["ts"] >= OOS_END])
+
+
+def test_in_sample_warmup_before_is_start_is_unchanged(tmp_path):
+    from tradingos.research.split import load_split
+    from tradingos.services.data_access import load_strategy_bars
+
+    split = load_split(BACKEND_DIR / "config" / "research_split.yaml")
+    bars = synth.to_frame(synth.legs(100, [(104, 1), (100, 1)] * 100), M5, t0=split.is_start - 300 * M5.ms)
+    CandleStore(tmp_path / "market").merge_save("BTC-USDT-SWAP", M5, bars)
+    settings = Settings(data_dir=tmp_path, strategy_config_dir=BACKEND_DIR / "config" / "strategies")
+    loaded, ctx = load_strategy_bars(settings, "BTC-USDT-SWAP", M5, split.is_start, split.is_start + 86_400_000, 90, "t")
+    assert int(loaded["ts"].iloc[0]) == split.is_start - 90 * M5.ms and ctx["trade_start_ts"] == split.is_start
+    assert ctx["warmup_data_segment"] == "WARMUP_ONLY" and not ctx["warmup_clamped_to_oos_end"]
+
+
+def test_experiment_id_and_segment_are_recorded_for_trial_counting(tmp_path):
+    bars = synth.bearish_ote_scenario()
+    CandleStore(tmp_path / "market").merge_save("BTC-USDT-SWAP", M5, bars)
+    settings = Settings(data_dir=tmp_path, strategy_config_dir=BACKEND_DIR / "config" / "strategies")
+    repo = RunRepository(settings.db_path)
+    base = dict(strategy_id="ma_crossover", strategy_version="v1", timeframe="5m",
+                start_ts=int(bars["ts"].iloc[150]), end_ts=int(bars["ts"].iloc[-1]) + M5.ms)
+    run = run_and_store(BacktestConfig(**base, experiment_id="H1-entry-timing"), settings, repo)
+    assert run["experiment_id"] == "H1-entry-timing"
+    run_and_store(BacktestConfig(**base), settings, repo)
+    listed = {r["summary"]["experiment_id"] for r in repo.list()}
+    assert listed == {"H1-entry-timing", None} and all(r["summary"]["segment"] == "IS" for r in repo.list())
+    with pytest.raises(ValueError):
+        BacktestConfig(**base, experiment_id="bad id with spaces")

@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> None:
     au = sub.add_parser("audit", help="per-trade look-ahead audit of a stored backtest run")
     au.add_argument("--run", required=True)
 
+    sub.add_parser("trials", help="count stored runs per experiment / segment / configuration (trial log)")
     sub.add_parser("docs", help="regenerate docs/strategies/generated/*.md from plugin schemas")
     sub.add_parser("strategies", help="list discovered strategy plugins and their configurations")
 
@@ -136,6 +137,19 @@ def main(argv: list[str] | None = None) -> None:
         if run is None:
             raise SystemExit(f"run {args.run} not found")
         print(json.dumps(audit_run(settings, run), indent=2, default=str))
+    elif args.cmd == "trials":
+        from collections import Counter
+
+        from tradingos.storage.runs import RunRepository
+
+        counts: Counter = Counter()
+        for r in RunRepository(settings.db_path).list(1000):
+            sm = r["summary"]
+            counts[(sm.get("experiment_id") or "(none)", sm.get("segment") or "(pre-split)", r["strategy_id"],
+                    r["strategy_version"], r["params_hash"][:10])] += 1
+        print("experiment | segment | strategy | version | params | runs")
+        for key, n in sorted(counts.items()):
+            print(" | ".join(key), "|", n)
     elif args.cmd == "docs":
         from tradingos.strategy.docgen import write_all
 
